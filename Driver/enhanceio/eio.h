@@ -61,6 +61,7 @@
 #include <linux/mm.h>
 #include <scsi/scsi_device.h>   /* required for SSD failure handling */
 /* resolve conflict with scsi/scsi_device.h */
+#include "compat.h"
 #ifdef QUEUED
 #undef QUEUED
 #endif
@@ -128,11 +129,7 @@ struct eio_control_s {
 	unsigned long synch_flags;
 };
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0))
-int eio_wait_schedule(struct wait_bit_key *unused);
-#else
-int eio_wait_schedule(void *unused);
-#endif
+int eio_wait_schedule(struct wait_bit_key *, int);
 
 struct eio_event {
 	struct task_struct *process;    /* handle of the sleeping process */
@@ -836,10 +833,13 @@ struct job_io_regions {
 #define EB_MAIN_IO 1
 #define EB_SUBORDINATE_IO 2
 #define EB_INVAL 4
-#define GET_BIO_FLAGS(ebio)             ((ebio)->eb_bc->bc_bio->bi_rw)
+#define GET_BIO_FLAGS(ebio)             ((ebio)->eb_bc->bc_bio->bi_opf)
 #define VERIFY_BIO_FLAGS(ebio)          EIO_ASSERT((ebio) && (ebio)->eb_bc && (ebio)->eb_bc->bc_bio)
 
-#if defined(RHEL_MAJOR) && (RHEL_MAJOR == 6)
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
+#define SET_BARRIER_FLAGS(rw_flags) (rw_flags |= (REQ_OP_WRITE | REQ_OP_FLUSH))
+#elif defined(RHEL_MAJOR) && (RHEL_MAJOR == 6)
 #define SET_BARRIER_FLAGS(rw_flags) (rw_flags |= (REQ_WRITE | BIO_FLUSH))
 #else
 #define SET_BARRIER_FLAGS(rw_flags) (rw_flags |= (REQ_WRITE | REQ_FLUSH))
@@ -1159,21 +1159,3 @@ extern sector_t eio_get_device_start_sect(struct eio_bdev *);
 #define EIO_CACHE(dmc)          (EIO_MD8(dmc) ? (void *)dmc->cache_md8 : (void *)dmc->cache)
 
 #endif                          /* !EIO_INC_H */
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35))
-static inline long atomic64_dec_if_positive(atomic64_t *v)
-{
-	long c, old, dec;
-	c = atomic64_read(v);
-	for (;;) {
-		dec = c - 1;
-		if (unlikely(dec < 0))
-			 break;
-		 old = atomic64_cmpxchg((v), c, dec);
-		if (likely(old == c))
-			break;
-		c = old;
-	}
-	return dec;
-}
-#endif

@@ -93,11 +93,7 @@ static void bc_put(struct bio_container *bc, unsigned int doneio)
 	if (atomic_dec_and_test(&bc->bc_holdcount)) {
 		if (bc->bc_dmc->mode == CACHE_MODE_WB)
 			eio_release_io_resources(bc->bc_dmc, bc);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		bc->bc_bio->bi_iter.bi_size = 0;
-#else 
-		bc->bc_bio->bi_size = 0;
-#endif 
+		EIO_BIO_BI_SIZE(bc->bc_bio) = 0;
 		dmc = bc->bc_dmc;
 
 		/* update iotime for latency */
@@ -109,7 +105,7 @@ static void bc_put(struct bio_container *bc, unsigned int doneio)
 		else
 			atomic64_add(elapsed, &dmc->eio_stats.wrtime_ms);
 
-		eio_bio_endio(bc->bc_bio, bc->bc_error);
+		EIO_BIO_ENDIO(bc->bc_bio, bc->bc_error);
 		atomic64_dec(&bc->bc_dmc->nr_ios);
 		kfree(bc);
 	}
@@ -2010,11 +2006,7 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 	int ios;
 
 	if (residual_biovec) {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		int bvecindex = bio->bi_iter.bi_idx;
-#else 
-		int bvecindex = bio->bi_idx;
-#endif 
+		int bvecindex = EIO_BIO_BI_IDX(bio);
 		int rbvindex;
 
 		/* Calculate the number of bvecs required */
@@ -2045,35 +2037,20 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 		rbvindex = 0;
 		ios = iosize;
 		while (ios > 0) {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
 			ebio->eb_rbv[rbvindex].bv_page =
-				bio->bi_io_vec[bio->bi_iter.bi_idx].bv_page;
+				bio->bi_io_vec[EIO_BIO_BI_IDX(bio)].bv_page;
 			ebio->eb_rbv[rbvindex].bv_offset =
-				bio->bi_io_vec[bio->bi_iter.bi_idx].bv_offset +
+				bio->bi_io_vec[EIO_BIO_BI_IDX(bio)].bv_offset +
 				residual_biovec;
 			ebio->eb_rbv[rbvindex].bv_len =
-				bio->bi_io_vec[bio->bi_iter.bi_idx].bv_len -
+				bio->bi_io_vec[EIO_BIO_BI_IDX(bio)].bv_len -
 				residual_biovec;
-#else 
-			ebio->eb_rbv[rbvindex].bv_page =
-				bio->bi_io_vec[bio->bi_idx].bv_page;
-			ebio->eb_rbv[rbvindex].bv_offset =
-				bio->bi_io_vec[bio->bi_idx].bv_offset +
-				residual_biovec;
-			ebio->eb_rbv[rbvindex].bv_len =
-				bio->bi_io_vec[bio->bi_idx].bv_len -
-				residual_biovec;
-#endif 
 			if (ebio->eb_rbv[rbvindex].bv_len > (unsigned)ios) {
 				residual_biovec += ios;
 				ebio->eb_rbv[rbvindex].bv_len = ios;
 			} else {
 				residual_biovec = 0;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-				bio->bi_iter.bi_idx++;
-#else 
-				bio->bi_idx++;
-#endif 
+				EIO_BIO_BI_IDX(bio)++;
 			}
 			ios -= ebio->eb_rbv[rbvindex].bv_len;
 			rbvindex++;
@@ -2085,29 +2062,16 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 
 		if (!ebio)
 			return ERR_PTR(-ENOMEM);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		ebio->eb_bv = bio->bi_io_vec + bio->bi_iter.bi_idx;
-#else 
-		ebio->eb_bv = bio->bi_io_vec + bio->bi_idx;
-#endif 
+		ebio->eb_bv = bio->bi_io_vec + EIO_BIO_BI_IDX(bio);
 		ios = iosize;
 		while (ios > 0) {
 			numbvecs++;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-			if ((unsigned)ios < bio->bi_io_vec[bio->bi_iter.bi_idx].bv_len) {
-#else 
-			if ((unsigned)ios < bio->bi_io_vec[bio->bi_idx].bv_len) {
-#endif 
+			if ((unsigned)ios < bio->bi_io_vec[EIO_BIO_BI_IDX(bio)].bv_len) {
 				residual_biovec = ios;
 				ios = 0;
 			} else {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-				ios -= bio->bi_io_vec[bio->bi_iter.bi_idx].bv_len;
-				bio->bi_iter.bi_idx++;
-#else 
-				ios -= bio->bi_io_vec[bio->bi_idx].bv_len;
-				bio->bi_idx++;
-#endif 
+				ios -= bio->bi_io_vec[EIO_BIO_BI_IDX(bio)].bv_len;
+				EIO_BIO_BI_IDX(bio)++;
 			}
 		}
 	}
@@ -2143,19 +2107,11 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 	int residual_biovec = 0;
 	int error = 0;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	/*disk io happens on whole bio. Reset bi_iter.bi_idx*/
-	bio->bi_iter.bi_idx = 0;
-	ebio =
-		eio_new_ebio(dmc, bio, &residual_biovec, bio->bi_iter.bi_sector,
-				 bio->bi_iter.bi_size, bc, EB_MAIN_IO);
-#else 
 	/*disk io happens on whole bio. Reset bi_idx*/
-	bio->bi_idx = 0;
+	EIO_BIO_BI_IDX(bio) = 0;
 	ebio =
-		eio_new_ebio(dmc, bio, &residual_biovec, bio->bi_sector,
-			     bio->bi_size, bc, EB_MAIN_IO);
-#endif 
+		eio_new_ebio(dmc, bio, &residual_biovec, EIO_BIO_BI_SECTOR(bio),
+				 EIO_BIO_BI_SIZE(bio), bc, EB_MAIN_IO);
 
 	if (unlikely(IS_ERR(ebio))) {
 		bc->bc_error = error = PTR_ERR(ebio);
@@ -2175,19 +2131,11 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 	atomic_inc(&dmc->nr_jobs);
 	if (ebio->eb_dir == READ) {
 		job->action = READDISK;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		SECTOR_STATS(dmc->eio_stats.disk_reads, bio->bi_iter.bi_size);
-#else 
-		SECTOR_STATS(dmc->eio_stats.disk_reads, bio->bi_size);
-#endif 
+		SECTOR_STATS(dmc->eio_stats.disk_reads, EIO_BIO_BI_SIZE(bio));
 		atomic64_inc(&dmc->eio_stats.readdisk);
 	} else {
 		job->action = WRITEDISK;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		SECTOR_STATS(dmc->eio_stats.disk_writes, bio->bi_iter.bi_size);
-#else 
-		SECTOR_STATS(dmc->eio_stats.disk_writes, bio->bi_size);
-#endif 
+		SECTOR_STATS(dmc->eio_stats.disk_writes, EIO_BIO_BI_SIZE(bio));
 		atomic64_inc(&dmc->eio_stats.writedisk);
 	}
 
@@ -2209,11 +2157,7 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 	return;
 
 errout:
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	eio_inval_range(dmc, bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
-#else 
-	eio_inval_range(dmc, bio->bi_sector, bio->bi_size);
-#endif 
+	eio_inval_range(dmc, EIO_BIO_BI_SECTOR(bio), EIO_BIO_BI_SIZE(bio));
 	eio_flag_abios(dmc, anchored_bios, error);
 
 	if (ebio)
@@ -2315,15 +2259,9 @@ static int eio_acquire_set_locks(struct cache_c *dmc, struct bio_container *bc)
 	 * - acquire read lock on the set.
 	 */
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	round_sector = EIO_ROUND_SET_SECTOR(dmc, bio->bi_iter.bi_sector);
+	round_sector = EIO_ROUND_SET_SECTOR(dmc, EIO_BIO_BI_SECTOR(bio));
 	set_size = dmc->block_size * dmc->assoc;
-	end_sector = bio->bi_iter.bi_sector + eio_to_sector(bio->bi_iter.bi_size);
-#else 
-	round_sector = EIO_ROUND_SET_SECTOR(dmc, bio->bi_sector);
-	set_size = dmc->block_size * dmc->assoc;
-	end_sector = bio->bi_sector + eio_to_sector(bio->bi_size);
-#endif 
+	end_sector = EIO_BIO_BI_SECTOR(bio) + eio_to_sector(EIO_BIO_BI_SIZE(bio));
 	first_set = -1;
 	last_set = -1;
 	cur_set = -1;
@@ -2512,11 +2450,7 @@ eio_release_io_resources(struct cache_c *dmc, struct bio_container *bc)
  */
 int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	sector_t sectors = eio_to_sector(bio->bi_iter.bi_size);
-#else 
-	sector_t sectors = eio_to_sector(bio->bi_size);
-#endif 
+	sector_t sectors = eio_to_sector(EIO_BIO_BI_SIZE(bio));
 	struct eio_bio *ebio = NULL;
 	struct bio_container *bc;
 	sector_t snum;
@@ -2532,31 +2466,23 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	struct eio_bio *eend = NULL;
 	struct eio_bio *enext = NULL;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	EIO_ASSERT(bio->bi_iter.bi_idx == 0);
-#else 
-	EIO_ASSERT(bio->bi_idx == 0);
-#endif 
+	EIO_ASSERT(EIO_BIO_BI_IDX(bio) == 0);
 
 	pr_debug("this needs to be removed immediately\n");
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
-	if (bio_rw_flagged(bio, REQ_DISCARD)) {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
+                if (bio_op(bio) == REQ_OP_DISCARD) {
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
+                if (bio->bi_opf & REQ_DISCARD) {
 #else
-	if (bio_rw_flagged(bio, BIO_DISCARD)) {
+                if (bio_rw_flagged(bio, BIO_RW_DISCARD)) {
 #endif
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+
 		pr_debug
 			("eio_map: Discard IO received. Invalidate incore start=%lu totalsectors=%d.\n",
-			(unsigned long)bio->bi_iter.bi_sector,
-			(int)eio_to_sector(bio->bi_iter.bi_size));
-#else 
-		pr_debug
-			("eio_map: Discard IO received. Invalidate incore start=%lu totalsectors=%d.\n",
-			(unsigned long)bio->bi_sector,
-			(int)eio_to_sector(bio->bi_size));
-#endif 
-		eio_bio_endio(bio, 0);
+			(unsigned long)EIO_BIO_BI_SECTOR(bio),
+			(int)eio_to_sector(EIO_BIO_BI_SIZE(bio)));
+		EIO_BIO_ENDIO(bio, 0);
 		pr_err
 			("eio_map: I/O with Discard flag received. Discard flag is not supported.\n");
 		return 0;
@@ -2564,7 +2490,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 
 	if (unlikely(dmc->cache_rdonly)) {
 		if (data_dir != READ) {
-			eio_bio_endio(bio, -EPERM);
+			EIO_BIO_ENDIO(bio, -EPERM);
 			pr_debug
 				("eio_map: cache is read only, write not permitted\n");
 			return 0;
@@ -2575,18 +2501,10 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 		atomic64_inc(&dmc->size_hist[sectors]);
 
 	if (data_dir == READ) {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		SECTOR_STATS(dmc->eio_stats.reads, bio->bi_iter.bi_size);
-#else 
-		SECTOR_STATS(dmc->eio_stats.reads, bio->bi_size);
-#endif 
+		SECTOR_STATS(dmc->eio_stats.reads, EIO_BIO_BI_SIZE(bio));
 		atomic64_inc(&dmc->eio_stats.readcount);
 	} else {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		SECTOR_STATS(dmc->eio_stats.writes, bio->bi_iter.bi_size);
-#else 
-		SECTOR_STATS(dmc->eio_stats.writes, bio->bi_size);
-#endif 
+		SECTOR_STATS(dmc->eio_stats.writes, EIO_BIO_BI_SIZE(bio));
 		atomic64_inc(&dmc->eio_stats.writecount);
 	}
 
@@ -2599,7 +2517,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 		/* Source device is not available. */
 		CTRACE
 			("eio_map:2 source device is not present. Cache is in Failed state\n");
-		eio_bio_endio(bio, -ENODEV);
+		EIO_BIO_ENDIO(bio, -ENODEV);
 		bio = NULL;
 		return DM_MAPIO_SUBMITTED;
 	}
@@ -2609,11 +2527,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 		EIO_ASSERT(dmc->mode != CACHE_MODE_WB);
 		force_uncached = 1;
 	} else if (data_dir == WRITE && dmc->mode == CACHE_MODE_RO) {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		if (to_sector(bio->bi_iter.bi_size) != dmc->block_size)
-#else
-		if (to_sector(bio->bi_size) != dmc->block_size)
-#endif
+		if (to_sector(EIO_BIO_BI_SIZE(bio)) != dmc->block_size)
 			atomic64_inc(&dmc->eio_stats.uncached_map_size);
 		else
 			atomic64_inc(&dmc->eio_stats.uncached_map_uncacheable);
@@ -2624,11 +2538,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	 * Process zero sized bios by passing original bio flags
 	 * to both HDD and SSD.
 	 */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	if (bio->bi_iter.bi_size == 0) {
-#else 
-	if (bio->bi_size == 0) {
-#endif 
+	if (EIO_BIO_BI_SIZE(bio) == 0) {
 		eio_process_zero_size_bio(dmc, bio);
 		return DM_MAPIO_SUBMITTED;
 	}
@@ -2637,7 +2547,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 
 	bc = kzalloc(sizeof(struct bio_container), GFP_NOWAIT);
 	if (!bc) {
-		eio_bio_endio(bio, -ENOMEM);
+		EIO_BIO_ENDIO(bio, -ENOMEM);
 		return DM_MAPIO_SUBMITTED;
 	}
 	bc->bc_iotime = jiffies;
@@ -2647,15 +2557,9 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	atomic_set(&bc->bc_holdcount, 1);
 	bc->bc_error = 0;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	snum = bio->bi_iter.bi_sector;
-	totalio = bio->bi_iter.bi_size;
-	biosize = bio->bi_iter.bi_size;
-#else 
-	snum = bio->bi_sector;
-	totalio = bio->bi_size;
-	biosize = bio->bi_size;
-#endif 
+	snum = EIO_BIO_BI_SECTOR(bio);
+	totalio = EIO_BIO_BI_SIZE(bio);
+	biosize = EIO_BIO_BI_SIZE(bio);
 	residual_biovec = 0;
 
 	if (dmc->mode == CACHE_MODE_WB) {
@@ -2668,7 +2572,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 		 */
 		ret = eio_acquire_set_locks(dmc, bc);
 		if (ret) {
-			eio_bio_endio(bio, ret);
+			EIO_BIO_ENDIO(bio, ret);
 			kfree(bc);
 			return DM_MAPIO_SUBMITTED;
 		}
@@ -3418,11 +3322,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 
 	/* wait for all I/Os to complete and release sync lock */
 	if (!atomic_dec_and_test(&sioc.pending)) {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0))
 		wait_for_completion_io(&sioc.done);
-#else
-		wait_for_completion(&sioc.done);
-#endif
 	}
 	error = sioc.sio_error;
 	if (error)
@@ -3435,11 +3335,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 	 * I/Os.
 	 */
 	atomic_set(&sioc.pending, 1);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0))
 	reinit_completion(&sioc.done);
-#else
-	INIT_COMPLETION(sioc.done);
-#endif
 	for (i = start_index; i < end_index; i++) {
 		if (EIO_CACHE_STATE_GET(dmc, i) == CLEAN_INPROG) {
 
@@ -3474,11 +3370,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 
 	/* wait for all I/Os to complete and release sync lock */
 	if (!atomic_dec_and_test(&sioc.pending)) {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0))
 		wait_for_completion_io(&sioc.done);
-#else
-		wait_for_completion(&sioc.done);
-#endif
 	}
 
 	error = sioc.sio_error;

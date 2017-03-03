@@ -32,31 +32,14 @@
 #include "eio.h"
 #include "eio_ttc.h"
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,17,0))
-#define wait_on_bit_lock_action wait_on_bit_lock
-#endif
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,16,0)) && !defined(smp_mb__after_atomic)
-#define smp_mb__after_atomic smp_mb__after_clear_bit
-#endif
-
-
 static struct rw_semaphore eio_ttc_lock[EIO_HASHTBL_SIZE];
 static struct list_head eio_ttc_list[EIO_HASHTBL_SIZE];
 
 int eio_reboot_notified;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
-static void eio_make_request_fn(struct request_queue *, struct bio *);
-#else
-static int eio_make_request_fn(struct request_queue *, struct bio *);
-#endif
+static MAKE_REQUEST_FN_TYPE eio_make_request_fn(struct request_queue *, struct bio *);
 static void eio_cache_rec_fill(struct cache_c *, struct cache_rec_short *);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-static void eio_bio_end_empty_barrier(struct bio *);
-#else
 static void eio_bio_end_empty_barrier(struct bio *, int);
-#endif
 static void eio_issue_empty_barrier_flush(struct block_device *, struct bio *,
 					  int, make_request_fn *, int rw_flags);
 static int eio_finish_nrdirty(struct cache_c *);
@@ -66,33 +49,7 @@ static int eio_policy_switch(struct cache_c *, u_int32_t);
 static int eio_overlap_split_bio(struct request_queue *, struct bio *);
 static struct bio *eio_split_new_bio(struct bio *, struct bio_container *,
 				     unsigned *, unsigned *, sector_t);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-static void eio_split_endio(struct bio *);
-#else
 static void eio_split_endio(struct bio *, int);
-#endif
-
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38))
-#else
-struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
-					void *holder)
-{
-	struct block_device *bdev;
-	int err;
-
-	bdev = lookup_bdev(path);
-	if (IS_ERR(bdev))
-		return bdev;
-	err = blkdev_get(bdev, mode);
-	if (err)
-		return ERR_PTR(err);
-       if ((mode & FMODE_WRITE) && bdev_read_only(bdev)) {
-                blkdev_put(bdev, mode);
-		return ERR_PTR(-EACCES);
-	}
-	return bdev;
-}
-#endif
 
 static int eio_open(struct inode *ip, struct file *filp)
 {
@@ -141,17 +98,17 @@ static inline
 void hdd_make_request(make_request_fn *origmfn, struct bio *bio)
 {
 	struct request_queue *q = NULL;
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0))
+#ifndef COMPAT_MAKE_REQUEST_FN_SUBMITS_IO
 	int ret;
 #endif
 	q = bdev_get_queue(bio->bi_bdev);
 	if (unlikely(!q)) {
 		pr_err("EIO: Trying to access nonexistent block-device\n");
-		eio_bio_endio(bio, -EIO);
+		EIO_BIO_ENDIO(bio, -EIO);
 		return;
 	}
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
+#ifdef COMPAT_MAKE_REQUEST_FN_SUBMITS_IO
 	origmfn(q, bio);
 #else
 	ret = origmfn(q, bio);
@@ -411,11 +368,7 @@ void eio_ttc_init(void)
  * 4. Race condition:
  */
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
-static void eio_make_request_fn(struct request_queue *q, struct bio *bio)
-#else
-static int eio_make_request_fn(struct request_queue *q, struct bio *bio)
-#endif
+static MAKE_REQUEST_FN_TYPE eio_make_request_fn(struct request_queue *q, struct bio *bio)
 {
 	int ret;
 	int overlap;
@@ -449,48 +402,26 @@ re_lookup:
 			origmfn = dmc1->origmfn;
 
 		/* I/O perfectly fit within cached partition */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		if ((bio->bi_iter.bi_sector >= dmc1->dev_start_sect) &&
-		    ((bio->bi_iter.bi_sector + eio_to_sector(bio->bi_iter.bi_size) - 1) <=
+		if ((EIO_BIO_BI_SECTOR(bio) >= dmc1->dev_start_sect) &&
+		    ((EIO_BIO_BI_SECTOR(bio) + eio_to_sector(EIO_BIO_BI_SIZE(bio)) - 1) <=
 		     dmc1->dev_end_sect)) {
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		if ((bio->bi_sector >= dmc1->dev_start_sect) &&
-		    ((bio->bi_sector + eio_to_sector(bio->bi_size) - 1) <=
-		     dmc1->dev_end_sect)) {
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
 			EIO_ASSERT(overlap == 0);
 			dmc = dmc1;     /* found cached partition */
 			break;
 		}
 
 		/* Check if I/O is overlapping with cached partitions */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		if (((bio->bi_iter.bi_sector >= dmc1->dev_start_sect) &&
-		     (bio->bi_iter.bi_sector <= dmc1->dev_end_sect)) ||
-		    ((bio->bi_iter.bi_sector + eio_to_sector(bio->bi_iter.bi_size) - 1 >=
+		if (((EIO_BIO_BI_SECTOR(bio) >= dmc1->dev_start_sect) &&
+		     (EIO_BIO_BI_SECTOR(bio) <= dmc1->dev_end_sect)) ||
+		    ((EIO_BIO_BI_SECTOR(bio) + eio_to_sector(EIO_BIO_BI_SIZE(bio)) - 1 >=
 		      dmc1->dev_start_sect) &&
-		     (bio->bi_iter.bi_sector + eio_to_sector(bio->bi_iter.bi_size) - 1 <=
+		     (EIO_BIO_BI_SECTOR(bio) + eio_to_sector(EIO_BIO_BI_SIZE(bio)) - 1 <=
 		      dmc1->dev_end_sect))) {
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		if (((bio->bi_sector >= dmc1->dev_start_sect) &&
-		     (bio->bi_sector <= dmc1->dev_end_sect)) ||
-		    ((bio->bi_sector + eio_to_sector(bio->bi_size) - 1 >=
-		      dmc1->dev_start_sect) &&
-		     (bio->bi_sector + eio_to_sector(bio->bi_size) - 1 <=
-		      dmc1->dev_end_sect))) {
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
 			overlap = 1;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
 			pr_err
 				("Overlapping I/O detected on %s cache at sector: %llu, size: %u\n",
-				dmc1->cache_name, (uint64_t)bio->bi_iter.bi_sector,
-				bio->bi_iter.bi_size);
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-			pr_err
-				("Overlapping I/O detected on %s cache at sector: %llu, size: %u\n",
-				dmc1->cache_name, (uint64_t)bio->bi_sector,
-				bio->bi_size);
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+				dmc1->cache_name, (uint64_t)EIO_BIO_BI_SECTOR(bio),
+				EIO_BIO_BI_SIZE(bio));
 			break;
 		}
 	}
@@ -498,15 +429,17 @@ re_lookup:
 	if (unlikely(overlap)) {
 		up_read(&eio_ttc_lock[index]);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39))
-		if (bio_rw_flagged(bio, REQ_DISCARD)) {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
+		if (bio_op(bio) == REQ_OP_DISCARD) {
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
+		if (bio->bi_opf & REQ_DISCARD) {
 #else
-		if (bio_rw_flagged(bio, BIO_DISCARD)) {
+		if (bio_rw_flagged(bio, BIO_RW_DISCARD)) {
 #endif
 			pr_err
 				("eio_mfn: Overlap I/O with Discard flag." \
 				" Discard flag is not supported.\n");
-			eio_bio_endio(bio, -EOPNOTSUPP);
+			EIO_BIO_ENDIO(bio, -EOPNOTSUPP);
 		} else
 			ret = eio_overlap_split_bio(q, bio);
 	} else if (dmc) {       /* found cached partition or device */
@@ -516,35 +449,21 @@ re_lookup:
 		 * Map start of the partition to zero reference.
 		 */
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		if (bio->bi_iter.bi_sector) {
-			EIO_ASSERT(bio->bi_iter.bi_sector >= dmc->dev_start_sect);
-			bio->bi_iter.bi_sector -= dmc->dev_start_sect;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		if (bio->bi_sector) {
-			EIO_ASSERT(bio->bi_sector >= dmc->dev_start_sect);
-			bio->bi_sector -= dmc->dev_start_sect;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+		if (EIO_BIO_BI_SECTOR(bio)) {
+			EIO_ASSERT(EIO_BIO_BI_SECTOR(bio) >= dmc->dev_start_sect);
+			EIO_BIO_BI_SECTOR(bio) -= dmc->dev_start_sect;
 		}
 		ret = eio_map(dmc, q, bio);
 		if (ret)
 			/* Error case: restore the start sector of bio */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-			bio->bi_iter.bi_sector += dmc->dev_start_sect;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-			bio->bi_sector += dmc->dev_start_sect;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+			EIO_BIO_BI_SECTOR(bio) += dmc->dev_start_sect;
 	}
 
 	if (!overlap)
 		up_read(&eio_ttc_lock[index]);
 
 	if (overlap || dmc)
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
-		return;
-#else
-		return 0;
-#endif
+		MAKE_REQUEST_FN_RETURN_0;
 
 	/*
 	 * Race condition:-
@@ -564,12 +483,8 @@ re_lookup:
 		goto re_lookup;
 
 	hdd_make_request(origmfn, bio);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
-	return;
-#else
-	return 0;
-#endif
 
+	MAKE_REQUEST_FN_RETURN_0;
 }
 
 uint64_t eio_get_cache_count(void)
@@ -734,15 +649,11 @@ static void eio_dec_count(struct eio_context *io, int error)
 	}
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-static void eio_endio(struct bio *bio)
-{
-	int error = bio->bi_error;
-#else
 static void eio_endio(struct bio *bio, int error)
 {
-#endif
 	struct eio_context *io;
+
+	EIO_ENDIO_FN_START;
 
 	io = bio->bi_private;
 	EIO_ASSERT(io != NULL);
@@ -773,28 +684,16 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
 		/* Check how many max bvecs bdev supports */
 		num_bvecs =
 			min_t(int,
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-                            BIO_MAX_PAGES,
-#else
-                            bio_get_nr_vecs(where->bdev),
-#endif
+                            EIO_BIO_GET_NR_VECS(where->bdev),
                             remaining_bvecs);
 		bio = bio_alloc(GFP_NOIO, num_bvecs);
 		bio->bi_bdev = where->bdev;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		bio->bi_iter.bi_sector = where->sector + (where->count - remaining);
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		bio->bi_sector = where->sector + (where->count - remaining);
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+		EIO_BIO_BI_SECTOR(bio) = where->sector + (where->count - remaining);
 
 		/* Remap the start sector of partition */
 		if (hddio)
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-			bio->bi_iter.bi_sector += dmc->dev_start_sect;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-			bio->bi_sector += dmc->dev_start_sect;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		bio->bi_rw |= rw;
+			EIO_BIO_BI_SECTOR(bio) += dmc->dev_start_sect;
+		bio->bi_opf |= rw;
 		bio->bi_end_io = eio_endio;
 		bio->bi_private = io;
 
@@ -818,7 +717,7 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
 			hdd_make_request(dmc->origmfn, bio);
 
 		else
-			submit_bio(rw, bio);
+			submit_bio(bio);
 
 	} while (remaining);
 
@@ -851,28 +750,17 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 		/* Check how many max bvecs bdev supports */
 		num_bvecs =
 			min_t(int,
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-                            BIO_MAX_PAGES,
-#else
-                            bio_get_nr_vecs(where->bdev),
-#endif
+                            EIO_BIO_GET_NR_VECS(where->bdev),
                             remaining_bvecs);
 		bio = bio_alloc(GFP_NOIO, num_bvecs);
 		bio->bi_bdev = where->bdev;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-		bio->bi_iter.bi_sector = where->sector + (where->count - remaining);
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		bio->bi_sector = where->sector + (where->count - remaining);
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+		EIO_BIO_BI_SECTOR(bio) = where->sector + (where->count - remaining);
 
 		/* Remap the start sector of partition */
 		if (hddio)
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-			bio->bi_iter.bi_sector += dmc->dev_start_sect;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-			bio->bi_sector += dmc->dev_start_sect;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-		bio->bi_rw |= rw;
+			EIO_BIO_BI_SECTOR(bio) += dmc->dev_start_sect;
+
+		bio->bi_opf |= rw;
 		bio->bi_end_io = eio_endio;
 		bio->bi_private = io;
 
@@ -896,7 +784,7 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 		if (hddio)
 			hdd_make_request(dmc->origmfn, bio);
 		else
-			submit_bio(rw, bio);
+			submit_bio(bio);
 
 	} while (remaining);
 
@@ -1021,13 +909,9 @@ void eio_process_zero_size_bio(struct cache_c *dmc, struct bio *origbio)
 	unsigned long rw_flags = 0;
 
 	/* Extract bio flags from original bio */
-	rw_flags = origbio->bi_rw;
+	rw_flags = origbio->bi_opf;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	EIO_ASSERT(origbio->bi_iter.bi_size == 0);
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-	EIO_ASSERT(origbio->bi_size == 0);
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+	EIO_ASSERT(EIO_BIO_BI_SIZE(origbio) == 0);
 	EIO_ASSERT(rw_flags != 0);
 
 	eio_issue_empty_barrier_flush(dmc->cache_dev->bdev, NULL,
@@ -1036,16 +920,13 @@ void eio_process_zero_size_bio(struct cache_c *dmc, struct bio *origbio)
 				      EIO_HDD_DEVICE, dmc->origmfn, rw_flags);
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-static void eio_bio_end_empty_barrier(struct bio *bio)
+static void eio_bio_end_empty_barrier(struct bio *bio, int error)
 {
-	int err = bio->bi_error;
-#else
-static void eio_bio_end_empty_barrier(struct bio *bio, int err)
-{
-#endif
+	EIO_ENDIO_FN_START;
+
 	if (bio->bi_private)
-		eio_bio_endio(bio->bi_private, err);
+		/*bio->bi_private is expected to be orig_bio here*/
+		EIO_BIO_ENDIO((struct bio*)bio->bi_private, error);
 	bio_put(bio);
 	return;
 }
@@ -1060,18 +941,18 @@ static void eio_issue_empty_barrier_flush(struct block_device *bdev,
 	bio = bio_alloc(GFP_KERNEL, 0);
 	if (!bio)
 		if (orig_bio)
-			eio_bio_endio(orig_bio, -ENOMEM);
+			EIO_BIO_ENDIO(orig_bio, -ENOMEM);
 	bio->bi_end_io = eio_bio_end_empty_barrier;
 	bio->bi_private = orig_bio;
 	bio->bi_bdev = bdev;
-	bio->bi_rw |= rw_flags;
+	bio->bi_opf |= rw_flags;
 
 	bio_get(bio);
 	if (device == EIO_HDD_DEVICE)
 		hdd_make_request(origmfn, bio);
 
 	else
-		submit_bio(0, bio);
+		submit_bio(bio);
 	bio_put(bio);
 	return;
 }
@@ -1735,22 +1616,16 @@ static int eio_overlap_split_bio(struct request_queue *q, struct bio *bio)
 	unsigned bvec_idx;
 	unsigned bvec_consumed;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	nbios = bio->bi_iter.bi_size >> SECTOR_SHIFT;
-	snum = bio->bi_iter.bi_sector;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-	nbios = bio->bi_size >> SECTOR_SHIFT;
-	snum = bio->bi_sector;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-
+	nbios = EIO_BIO_BI_SIZE(bio) >> SECTOR_SHIFT;
+	snum = EIO_BIO_BI_SECTOR(bio);
 	bioptr = kmalloc(nbios * (sizeof(void *)), GFP_KERNEL);
 	if (!bioptr) {
-		eio_bio_endio(bio, -ENOMEM);
+		EIO_BIO_ENDIO(bio, -ENOMEM);
 		return 0;
 	}
 	bc = kmalloc(sizeof(struct bio_container), GFP_NOWAIT);
 	if (!bc) {
-		eio_bio_endio(bio, -ENOMEM);
+		EIO_BIO_ENDIO(bio, -ENOMEM);
 		kfree(bioptr);
 		return 0;
 	}
@@ -1758,12 +1633,7 @@ static int eio_overlap_split_bio(struct request_queue *q, struct bio *bio)
 	atomic_set(&bc->bc_holdcount, nbios);
 	bc->bc_bio = bio;
 	bc->bc_error = 0;
-
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	bvec_idx = bio->bi_iter.bi_idx;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-	bvec_idx = bio->bi_idx;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+	bvec_idx = EIO_BIO_BI_IDX(bio);
 	bvec_consumed = 0;
 	for (i = 0; i < nbios; i++) {
 		bioptr[i] =
@@ -1778,7 +1648,7 @@ static int eio_overlap_split_bio(struct request_queue *q, struct bio *bio)
 	if (i < nbios) {
 		for (i--; i >= 0; i--)
 			bio_put(bioptr[i]);
-		eio_bio_endio(bio, -ENOMEM);
+		EIO_BIO_ENDIO(bio, -ENOMEM);
 		kfree(bc);
 		goto out;
 	}
@@ -1817,41 +1687,28 @@ static struct bio *eio_split_new_bio(struct bio *bio, struct bio_container *bc,
 	cbio->bi_io_vec[0].bv_len = iosize;
 	*bvec_consumed += iosize;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	cbio->bi_iter.bi_sector = snum;
-	cbio->bi_iter.bi_size = iosize;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-	cbio->bi_sector = snum;
-	cbio->bi_size = iosize;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+	EIO_BIO_BI_SECTOR(cbio) = snum;
+	EIO_BIO_BI_SIZE(cbio) = iosize;
 	cbio->bi_bdev = bio->bi_bdev;
-	cbio->bi_rw = bio->bi_rw;
+	cbio->bi_opf = bio->bi_opf;
 	cbio->bi_vcnt = 1;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
-	cbio->bi_iter.bi_idx = 0;
-#else /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
-	cbio->bi_idx = 0;
-#endif /* #else #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)) */
+	EIO_BIO_BI_IDX(cbio) = 0;
 	cbio->bi_end_io = eio_split_endio;
 	cbio->bi_private = bc;
 	return cbio;
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-static void eio_split_endio(struct bio *bio)
-{
-	int error = bio->bi_error;
-#else
 static void eio_split_endio(struct bio *bio, int error)
 {
-#endif
 	struct bio_container *bc = bio->bi_private;
+
+	EIO_ENDIO_FN_START;
 
 	if (error)
 		bc->bc_error = error;
 	bio_put(bio);
 	if (atomic_dec_and_test(&bc->bc_holdcount)) {
-		eio_bio_endio(bc->bc_bio, bc->bc_error);
+		EIO_BIO_ENDIO(bc->bc_bio, bc->bc_error);
 		kfree(bc);
 	}
 	return;

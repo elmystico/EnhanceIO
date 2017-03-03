@@ -89,21 +89,11 @@ static struct notifier_block eio_ssd_rm_notifier = {
 	.priority	= 0,
 };
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0))
-int eio_wait_schedule(struct wait_bit_key *unused)
-#else
-#define wait_on_bit_lock_action wait_on_bit_lock
-int eio_wait_schedule(void *unused)
-#endif
+int eio_wait_schedule(struct wait_bit_key *unused, int unused2)
 {
-
 	schedule();
 	return 0;
 }
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,16,0)) && !defined(smp_mb__after_atomic)
-#define smp_mb__after_atomic smp_mb__after_clear_bit
-#endif
 
 /*
  * Check if the System RAM threshold > requested memory, don't care
@@ -1433,11 +1423,7 @@ static void eio_init_ssddev_props(struct cache_c *dmc)
 
 	rq = bdev_get_queue(dmc->cache_dev->bdev);
 	max_hw_sectors = to_bytes(queue_max_hw_sectors(rq)) / PAGE_SIZE;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0))
-	max_nr_pages = BIO_MAX_PAGES;
-#else
-	max_nr_pages = (u_int32_t)bio_get_nr_vecs(dmc->cache_dev->bdev);
-#endif
+	max_nr_pages = (u_int32_t)EIO_BIO_GET_NR_VECS(dmc->cache_dev->bdev);
 	nr_pages = min_t(u_int32_t, max_hw_sectors, max_nr_pages);
 	dmc->bio_nr_pages = nr_pages;
 
@@ -1451,9 +1437,9 @@ static void eio_init_ssddev_props(struct cache_c *dmc)
 
 	if (dmc->cache_dev && dmc->cache_dev->bdev &&
 	    dmc->cache_dev->bdev->bd_disk &&
-	    dmc->cache_dev->bdev->bd_disk->driverfs_dev) {
+	    EIO_DRIVERFS_DEV(dmc->cache_dev->bdev->bd_disk)) {
 		strncpy(dmc->cache_gendisk_name,
-			dev_name(dmc->cache_dev->bdev->bd_disk->driverfs_dev),
+			dev_name(EIO_DRIVERFS_DEV(dmc->cache_dev->bdev->bd_disk)),
 			DEV_PATHLEN);
 	} else
 		dmc->cache_gendisk_name[0] = '\0';
@@ -1464,9 +1450,9 @@ static void eio_init_srcdev_props(struct cache_c *dmc)
 	/* Same applies for source device as well. */
 	if (dmc->disk_dev && dmc->disk_dev->bdev &&
 	    dmc->disk_dev->bdev->bd_disk &&
-	    dmc->disk_dev->bdev->bd_disk->driverfs_dev) {
+	    EIO_DRIVERFS_DEV(dmc->disk_dev->bdev->bd_disk)) {
 		strncpy(dmc->cache_srcdisk_name,
-			dev_name(dmc->disk_dev->bdev->bd_disk->driverfs_dev),
+			dev_name(EIO_DRIVERFS_DEV(dmc->disk_dev->bdev->bd_disk)),
 			DEV_PATHLEN);
 	} else
 		dmc->cache_srcdisk_name[0] = '\0';
