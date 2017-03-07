@@ -26,6 +26,8 @@ import subprocess
 import os
 import re
 
+libc = CDLL('libc.so.6')
+
 #TBD : Change ioctl numbers to comply with linux kernel convention
 EIODEV = '/dev/eiodev'
 EIO_IOC_CREATE = 1104168192 
@@ -305,10 +307,10 @@ class Cache_rec(Structure):
 
 	def do_eio_ioctl(self,IOC_TYPE):
 		#send ioctl to driver
-		fd = open(EIODEV, "r")
-		fmt = ''
+		fd = os.open(EIODEV, os.O_RDWR, 0400)
+		selfaddress = c_ulong(addressof(self))
 		try:
-			if ioctl(fd, IOC_TYPE, addressof(self)) == SUCCESS:
+			if libc.ioctl(fd, IOC_TYPE, selfaddress) == SUCCESS:
 				return SUCCESS
 		except Exception as e:
 			print e
