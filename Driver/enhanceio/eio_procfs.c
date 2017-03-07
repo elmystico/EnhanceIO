@@ -116,6 +116,7 @@ eio_zerostats_sysctl(struct ctl_table *table, int write, void __user *buffer,
 			memset(&dmc->eio_stats, 0, sizeof(struct eio_stats));
 			atomic64_set(&dmc->eio_stats.cached_blocks,
 				     cached_blocks);
+			dmc->sysctl_active.zerostats = 0;
 		}
 	}
 
