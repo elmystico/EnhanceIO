@@ -833,17 +833,9 @@ struct job_io_regions {
 #define EB_MAIN_IO 1
 #define EB_SUBORDINATE_IO 2
 #define EB_INVAL 4
-#define GET_BIO_FLAGS(ebio)             ((ebio)->eb_bc->bc_bio->bi_opf)
+#define GET_BIO_OP(ebio)                bio_op((ebio)->eb_bc->bc_bio)
+#define GET_BIO_FLAGS(ebio)             bio_flags((ebio)->eb_bc->bc_bio)
 #define VERIFY_BIO_FLAGS(ebio)          EIO_ASSERT((ebio) && (ebio)->eb_bc && (ebio)->eb_bc->bc_bio)
-
-
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
-#define SET_BARRIER_FLAGS(rw_flags) (rw_flags |= (REQ_OP_WRITE | REQ_OP_FLUSH))
-#elif defined(RHEL_MAJOR) && (RHEL_MAJOR == 6)
-#define SET_BARRIER_FLAGS(rw_flags) (rw_flags |= (REQ_WRITE | BIO_FLUSH))
-#else
-#define SET_BARRIER_FLAGS(rw_flags) (rw_flags |= (REQ_WRITE | REQ_FLUSH))
-#endif
 
 struct eio_bio {
 	int eb_iotype;
@@ -954,10 +946,10 @@ void eio_comply_dirty_thresholds(struct cache_c *dmc, index_t set);
 void eio_reclaim_lru_movetail(struct cache_c *dmc, index_t index,
 			      struct eio_policy *);
 #endif                          /* !SSDCACHE */
-int eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where, int rw,
-		   struct bio_vec *bvec, int nbvec);
-int eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, int rw,
-		      struct page **pages, int num_bvecs);
+int eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+		   unsigned op_flags, struct bio_vec *bvec, int nbvec);
+int eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+		   unsigned op_flags, struct page **pages, int num_bvecs);
 void eio_update_sync_progress(struct cache_c *dmc);
 void eio_plug_cache_device(struct cache_c *dmc);
 void eio_unplug_cache_device(struct cache_c *dmc);
@@ -1043,7 +1035,7 @@ extern void eio_push_md_complete(struct kcached_job *job);
 extern void eio_push_uncached_io_complete(struct kcached_job *job);
 extern int eio_io_empty(void);
 extern int eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where,
-			  int rw, struct bio_vec *bvec, int nbvec);
+			  unsigned op, unsigned op_flags, struct bio_vec *bvec, int nbvec);
 extern void eio_unplug_cache_device(struct cache_c *dmc);
 extern void eio_put_cache_device(struct cache_c *dmc);
 extern void eio_suspend_caching(struct cache_c *dmc, enum dev_notifier note);

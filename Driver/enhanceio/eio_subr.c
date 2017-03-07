@@ -193,8 +193,8 @@ struct kcached_job *eio_new_job(struct cache_c *dmc, struct eio_bio *bio,
 }
 
 int
-eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, int rw,
-		  struct page **pages, int num_bvecs)
+eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+		  unsigned op_flags, struct page **pages, int num_bvecs)
 {
 	struct eio_io_request req;
 	int error;
@@ -211,7 +211,7 @@ eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, int rw,
 	    (!CACHE_SSD_ADD_INPROG_IS_SET(dmc)))
 		error = -ENODEV;
 	else
-		error = eio_do_io(dmc, where, rw, &req);
+		error = eio_do_io(dmc, where, op, op_flags, &req);
 
 	if (error)
 		return error;
@@ -220,8 +220,8 @@ eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, int rw,
 }
 
 int
-eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where, int rw,
-	       struct bio_vec *pages, int num_bvecs)
+eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+		  unsigned op_flags, struct bio_vec *pages, int num_bvecs)
 {
 	struct eio_io_request req;
 	int error;
@@ -240,7 +240,7 @@ eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where, int rw,
 	    (!CACHE_SSD_ADD_INPROG_IS_SET(dmc)))
 		error = -ENODEV;
 	else
-		error = eio_do_io(dmc, where, rw, &req);
+		error = eio_do_io(dmc, where, op, op_flags, &req);
 	if (error)
 		return error;
 	return 0;

@@ -55,8 +55,8 @@ struct eio_context {
 	void *context;
 };
 
-int eio_do_io(struct cache_c *dmc, struct eio_io_region *where, int rw,
-	      struct eio_io_request *io_req);
+int eio_do_io(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+	      unsigned op_flags, struct eio_io_request *io_req);
 
 enum eio_device {
 	EIO_HDD_DEVICE = 1,

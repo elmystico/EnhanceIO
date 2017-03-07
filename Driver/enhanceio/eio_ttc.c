@@ -25,8 +25,6 @@
  *
  */
 
-#include <linux/blkdev.h>
-#include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include "eio.h"
@@ -41,7 +39,7 @@ static MAKE_REQUEST_FN_TYPE eio_make_request_fn(struct request_queue *, struct b
 static void eio_cache_rec_fill(struct cache_c *, struct cache_rec_short *);
 static void eio_bio_end_empty_barrier(struct bio *, int);
 static void eio_issue_empty_barrier_flush(struct block_device *, struct bio *,
-					  int, make_request_fn *, int rw_flags);
+					  int, make_request_fn *, unsigned op, unsigned op_flags);
 static int eio_finish_nrdirty(struct cache_c *);
 static int eio_mode_switch(struct cache_c *, u_int32_t);
 static int eio_policy_switch(struct cache_c *, u_int32_t);
@@ -125,7 +123,6 @@ int eio_ttc_get_device(const char *path, fmode_t mode, struct eio_bdev **result)
 	struct eio_bdev *eio_bdev;
 
 	static char *eio_holder = "EnhanceIO";
-
 	bdev = blkdev_get_by_path(path, mode, eio_holder);
 	if (IS_ERR(bdev))
 		return PTR_ERR(bdev);
@@ -180,7 +177,6 @@ int eio_ttc_activate(struct cache_c *dmc)
 	int wholedisk;
 	int error;
 	int index;
-	int rw_flags = 0;
 
 	bdev = dmc->disk_dev->bdev;
 	if (bdev == NULL) {
@@ -246,9 +242,8 @@ int eio_ttc_activate(struct cache_c *dmc)
 	 */
 
 	msleep(1);
-	SET_BARRIER_FLAGS(rw_flags);
 	eio_issue_empty_barrier_flush(dmc->disk_dev->bdev, NULL,
-				      EIO_HDD_DEVICE, dmc->origmfn, rw_flags);
+				      EIO_HDD_DEVICE, dmc->origmfn, REQ_OP_WRITE, WRITE_FLUSH);
 	up_write(&eio_ttc_lock[index]);
 
 out:
@@ -429,13 +424,7 @@ re_lookup:
 	if (unlikely(overlap)) {
 		up_read(&eio_ttc_lock[index]);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
 		if (bio_op(bio) == REQ_OP_DISCARD) {
-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
-		if (bio->bi_opf & REQ_DISCARD) {
-#else
-		if (bio_rw_flagged(bio, BIO_RW_DISCARD)) {
-#endif
 			pr_err
 				("eio_mfn: Overlap I/O with Discard flag." \
 				" Discard flag is not supported.\n");
@@ -664,7 +653,7 @@ static void eio_endio(struct bio *bio, int error)
 }
 
 static int eio_dispatch_io_pages(struct cache_c *dmc,
-				 struct eio_io_region *where, int rw,
+				 struct eio_io_region *where, unsigned op, unsigned op_flags,
 				 struct page **pagelist, struct eio_context *io,
 				 int hddio, int num_vecs, int sync)
 {
@@ -693,7 +682,7 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
 		/* Remap the start sector of partition */
 		if (hddio)
 			EIO_BIO_BI_SECTOR(bio) += dmc->dev_start_sect;
-		bio->bi_opf |= rw;
+		bio_set_op_attrs(bio, op, op_flags);
 		bio->bi_end_io = eio_endio;
 		bio->bi_private = io;
 
@@ -731,8 +720,8 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
  * fit into single bio.
  */
 
-static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
-			   int rw, struct bio_vec *bvec, struct eio_context *io,
+static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+			   unsigned op_flags, struct bio_vec *bvec, struct eio_context *io,
 			   int hddio, int num_vecs, int sync)
 {
 	struct bio *bio;
@@ -760,7 +749,7 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 		if (hddio)
 			EIO_BIO_BI_SECTOR(bio) += dmc->dev_start_sect;
 
-		bio->bi_opf |= rw;
+		bio_set_op_attrs(bio, op, op_flags);
 		bio->bi_end_io = eio_endio;
 		bio->bi_private = io;
 
@@ -793,7 +782,7 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 }
 
 static int eio_async_io(struct cache_c *dmc, struct eio_io_region *where,
-			int rw, struct eio_io_request *req)
+			unsigned op, unsigned op_flags, struct eio_io_request *req)
 {
 	struct eio_context *io;
 	int err = 0;
@@ -813,13 +802,13 @@ static int eio_async_io(struct cache_c *dmc, struct eio_io_region *where,
 	switch (req->mtype) {
 	case EIO_BVECS:
 		err =
-			eio_dispatch_io(dmc, where, rw, req->dptr.pages, io,
+			eio_dispatch_io(dmc, where, op, op_flags, req->dptr.pages, io,
 					req->hddio, req->num_bvecs, 0);
 		break;
 
 	case EIO_PAGES:
 		err =
-			eio_dispatch_io_pages(dmc, where, rw, req->dptr.plist, io,
+			eio_dispatch_io_pages(dmc, where, op, op_flags, req->dptr.plist, io,
 					      req->hddio, req->num_bvecs, 0);
 		break;
 	}
@@ -845,7 +834,7 @@ retry:
 }
 
 static int eio_sync_io(struct cache_c *dmc, struct eio_io_region *where,
-		       int rw, struct eio_io_request *req)
+		       unsigned op, unsigned op_flags, struct eio_io_request *req)
 {
 	int ret = 0;
 	struct eio_context io;
@@ -860,15 +849,15 @@ static int eio_sync_io(struct cache_c *dmc, struct eio_io_region *where,
 	io.context = NULL;
 
 	/* For synchronous I/Os pass SYNC */
-	rw |= REQ_SYNC;
+	op_flags |= REQ_SYNC;
 
 	switch (req->mtype) {
 	case EIO_BVECS:
-		ret = eio_dispatch_io(dmc, where, rw, req->dptr.pages,
+		ret = eio_dispatch_io(dmc, where, op, op_flags, req->dptr.pages,
 				      &io, req->hddio, req->num_bvecs, 1);
 		break;
 	case EIO_PAGES:
-		ret = eio_dispatch_io_pages(dmc, where, rw, req->dptr.plist,
+		ret = eio_dispatch_io_pages(dmc, where, op, op_flags, req->dptr.plist,
 					    &io, req->hddio, req->num_bvecs, 1);
 		break;
 	}
@@ -895,29 +884,31 @@ retry:
 	return ret;
 }
 
-int eio_do_io(struct cache_c *dmc, struct eio_io_region *where, int rw,
-	      struct eio_io_request *io_req)
+int eio_do_io(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
+	      unsigned op_flags, struct eio_io_request *io_req)
 {
 	if (!io_req->notify)
-		return eio_sync_io(dmc, where, rw, io_req);
+		return eio_sync_io(dmc, where, op, op_flags, io_req);
 
-	return eio_async_io(dmc, where, rw, io_req);
+	return eio_async_io(dmc, where, op, op_flags, io_req);
 }
 
 void eio_process_zero_size_bio(struct cache_c *dmc, struct bio *origbio)
 {
-	unsigned long rw_flags = 0;
+	unsigned op_flags = 0;
+	unsigned op = 0;
 
 	/* Extract bio flags from original bio */
-	rw_flags = origbio->bi_opf;
+	op_flags = bio_flags(origbio);
+	op = bio_op(origbio);
 
 	EIO_ASSERT(EIO_BIO_BI_SIZE(origbio) == 0);
-	EIO_ASSERT(rw_flags != 0);
+	EIO_ASSERT(op != REQ_OP_READ);
 
 	eio_issue_empty_barrier_flush(dmc->cache_dev->bdev, NULL,
-				      EIO_SSD_DEVICE, NULL, rw_flags);
+				      EIO_SSD_DEVICE, NULL, op, op_flags);
 	eio_issue_empty_barrier_flush(dmc->disk_dev->bdev, origbio,
-				      EIO_HDD_DEVICE, dmc->origmfn, rw_flags);
+				      EIO_HDD_DEVICE, dmc->origmfn, op, op_flags);
 }
 
 static void eio_bio_end_empty_barrier(struct bio *bio, int error)
@@ -934,7 +925,7 @@ static void eio_bio_end_empty_barrier(struct bio *bio, int error)
 static void eio_issue_empty_barrier_flush(struct block_device *bdev,
 					  struct bio *orig_bio, int device,
 					  make_request_fn *origmfn,
-					  int rw_flags)
+					  unsigned op, unsigned op_flags)
 {
 	struct bio *bio;
 
@@ -945,7 +936,7 @@ static void eio_issue_empty_barrier_flush(struct block_device *bdev,
 	bio->bi_end_io = eio_bio_end_empty_barrier;
 	bio->bi_private = orig_bio;
 	bio->bi_bdev = bdev;
-	bio->bi_opf |= rw_flags;
+	bio_set_op_attrs(bio, op, op_flags);
 
 	bio_get(bio);
 	if (device == EIO_HDD_DEVICE)

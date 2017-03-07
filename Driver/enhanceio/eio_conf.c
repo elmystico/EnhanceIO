@@ -320,7 +320,7 @@ int eio_sb_store(struct cache_c *dmc)
 	where.bdev = dmc->cache_dev->bdev;
 	where.sector = EIO_SUPERBLOCK_START;
 	where.count = eio_to_sector(EIO_SUPERBLOCK_SIZE);
-	error = eio_io_sync_vm(dmc, &where, WRITE, sb_pages, nr_pages);
+	error = eio_io_sync_vm(dmc, &where, REQ_OP_WRITE, 0, sb_pages, nr_pages);
 	if (error) {
 		pr_err
 			("sb_store: Could not write out superblock to sector %llu (error %d) for cache \"%s\".\n",
@@ -450,7 +450,7 @@ int eio_md_store(struct cache_c *dmc)
 				sectors_written += where.count; /* debug */
 
 				error =
-					eio_io_sync_vm(dmc, &where, WRITE, pages,
+					eio_io_sync_vm(dmc, &where, REQ_OP_WRITE, 0, pages,
 						       nr_pages);
 
 				if (error) {
@@ -504,7 +504,7 @@ int eio_md_store(struct cache_c *dmc)
 			page_index++;
 		}
 
-		error = eio_io_sync_vm(dmc, &where, WRITE, pages, page_index);
+		error = eio_io_sync_vm(dmc, &where, REQ_OP_WRITE, 0, pages, page_index);
 		/* XXX: should we call eio_sb_store() on error ?? */
 		if (error) {
 			write_errors++;
@@ -622,7 +622,7 @@ static int eio_md_create(struct cache_c *dmc, int force, int cold)
 	where.bdev = dmc->cache_dev->bdev;
 	where.sector = EIO_SUPERBLOCK_START;
 	where.count = eio_to_sector(EIO_SUPERBLOCK_SIZE);
-	error = eio_io_sync_vm(dmc, &where, READ, header_page, 1);
+	error = eio_io_sync_vm(dmc, &where, REQ_OP_READ, 0, header_page, 1);
 	if (error) {
 		pr_err
 			("md_create: Could not read superblock sector %llu error %d for cache \"%s\".\n",
@@ -816,7 +816,7 @@ static int eio_md_create(struct cache_c *dmc, int force, int cold)
 					page_index = 0;
 					sectors_written += where.count; /* debug */
 					error =
-						eio_io_sync_vm(dmc, &where, WRITE,
+						eio_io_sync_vm(dmc, &where, REQ_OP_WRITE, 0,
 							       pages, nr_pages);
 
 					if (error) {
@@ -874,7 +874,7 @@ static int eio_md_create(struct cache_c *dmc, int force, int cold)
 			}
 
 			error =
-				eio_io_sync_vm(dmc, &where, WRITE, pages,
+				eio_io_sync_vm(dmc, &where, REQ_OP_WRITE, 0, pages,
 					       page_index);
 			if (error) {
 				if (!CACHE_SSD_ADD_INPROG_IS_SET(dmc))
@@ -993,7 +993,7 @@ static int eio_md_load(struct cache_c *dmc)
 	where.bdev = dmc->cache_dev->bdev;
 	where.sector = EIO_SUPERBLOCK_START;
 	where.count = eio_to_sector(EIO_SUPERBLOCK_SIZE);
-	error = eio_io_sync_vm(dmc, &where, READ, header_page, 1);
+	error = eio_io_sync_vm(dmc, &where, REQ_OP_READ, 0, header_page, 1);
 	if (error) {
 		pr_err
 			("md_load: Could not read cache superblock sector %llu error %d",
@@ -1246,7 +1246,7 @@ static int eio_md_load(struct cache_c *dmc)
 			page_count = slots_read / MD_BLOCKS_PER_PAGE;
 
 		sectors_read += where.count;    /* Debug */
-		error = eio_io_sync_vm(dmc, &where, READ, pages, page_count);
+		error = eio_io_sync_vm(dmc, &where, REQ_OP_READ, 0, pages, page_count);
 		if (error) {
 			vfree((void *)EIO_CACHE(dmc));
 			pr_err

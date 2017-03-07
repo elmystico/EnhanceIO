@@ -45,8 +45,130 @@
 #define EIO_DRIVERFS_DEV(GENDISK) ((GENDISK)->driverfs_dev)
 #endif
 
+/* bio -> bi_rw/bi_opf REQ_* and BIO_RW_* REQ_OP_* compat stuff
+ * Following code was mostly borrowed from DRBD driver including
+ * most of comments :)
+ */
+
+#ifdef COMPAT_HAVE_BIO_OPF
+
+#define EIO_REQ_PREFLUSH       REQ_PREFLUSH
+#define EIO_REQ_FUA            REQ_FUA
+#define EIO_REQ_SYNC           REQ_SYNC
+
+        /* long gone */
+#define EIO_REQ_HARDBARRIER    0
+#define EIO_REQ_UNPLUG         0
+
+        /* became an op, no longer flag */
+#define EIO_REQ_DISCARD        0
+#define EIO_REQ_WSAME          0
+
+#define COMPAT_WRITE_SAME_CAPABLE
+
+#elif defined(BIO_FLUSH)
+/* RHEL 6.1 backported FLUSH/FUA as BIO_RW_FLUSH/FUA
+ * and at that time also introduced the defines BIO_FLUSH/FUA.
+ * There is also REQ_FLUSH/FUA, but these do NOT share
+ * the same value space as the bio rw flags, yet.
+ */
+
+#define EIO_REQ_PREFLUSH       (1UL << BIO_RW_FLUSH)
+#define EIO_REQ_FUA            (1UL << BIO_RW_FUA)
+#define EIO_REQ_HARDBARRIER    (1UL << BIO_RW_BARRIER)
+#define EIO_REQ_DISCARD        (1UL << BIO_RW_DISCARD)
+#define EIO_REQ_SYNC           (1UL << BIO_RW_SYNCIO)
+#define EIO_REQ_UNPLUG         (1UL << BIO_RW_UNPLUG)
+
+#define REQ_RAHEAD             (1UL << BIO_RW_AHEAD)
+
+#elif defined(REQ_FLUSH)        /* introduced in 2.6.36 */
+
+#define EIO_REQ_SYNC           REQ_SYNC
+#define EIO_REQ_PREFLUSH       REQ_FLUSH
+#define EIO_REQ_FUA            REQ_FUA
+#define EIO_REQ_DISCARD        REQ_DISCARD
+
+#ifdef REQ_HARDBARRIER
+#define EIO_REQ_HARDBARRIER    REQ_HARDBARRIER
+#else
+#define EIO_REQ_HARDBARRIER    0
+#endif
+
+#ifdef REQ_UNPLUG
+#define EIO_REQ_UNPLUG         REQ_UNPLUG
+#else
+#define EIO_REQ_UNPLUG         0
+#endif
+
+#ifdef REQ_WRITE_SAME
+#define EIO_REQ_WSAME          REQ_WRITE_SAME
+#endif
+
+#else                           /* Disable build on very old kernels*/
+#error Kernel is too old
+#endif
+
+#ifndef EIO_REQ_WSAME
+#define EIO_REQ_WSAME          0
+#endif
+/* END of bio -> bi_rw/bi_opf REQ_* and BIO_RW_* REQ_OP_* */
+
+
 #ifndef COMPAT_HAVE_BIO_OPF
 #define bi_opf bi_rw
+
+#ifndef REQ_WRITE
+/* before 2.6.36 */
+#define REQ_WRITE 1
+#endif
+
+enum req_op {
+       REQ_OP_READ,                             /* 0 */
+       REQ_OP_WRITE             = REQ_WRITE,    /* 1 */
+
+       /* Not yet a distinguished op,
+        * but identified via FLUSH/FUA flags.
+        * If at all. */
+       REQ_OP_FLUSH             = REQ_OP_WRITE,
+
+        /* These may be not supported in older kernels.
+         * In that case, the EIO_REQ_* will be 0,
+         * bio_op() aka. op_from_rq_bits() will never return these,
+         * and we map the REQ_OP_* to something stupid.
+         */
+       REQ_OP_DISCARD           = EIO_REQ_DISCARD ?: -1,
+       REQ_OP_WRITE_SAME        = EIO_REQ_WSAME   ?: -2,
+};
+
+#define bio_op(bio)          (op_from_rq_bits((bio)->bi_rw))
+
+/* This bio_flags macro is inconsistent with bio_flags in kernels > 4.8,
+ * because it returns operations also, but it doesn't matter as flags
+ * and operations are simply or'ed together in older kernels */
+#define bio_flags(bio)       ((bio)->bi_rw)
+
+static inline void bio_set_op_attrs(struct bio *bio, const int op, const long flags)
+{
+        /* REQ_OP_READ or REQ_OP_WRITE are only supported for now.
+         * (and req_op_flush, but this is req_op_write actually,
+         * see above)*/
+        BUG_ON(!(op == REQ_OP_READ || op == REQ_OP_WRITE));
+        bio->bi_rw |= (op | flags);
+}
+
+static inline int op_from_rq_bits(u64 flags)
+{
+        if (flags & EIO_REQ_DISCARD)
+                return REQ_OP_DISCARD;
+        else if (flags & EIO_REQ_WSAME)
+                return REQ_OP_WRITE_SAME;
+        else if (flags & REQ_WRITE)
+                return REQ_OP_WRITE;
+        else
+                return REQ_OP_READ;
+}
+
 #define submit_bio(__bio) submit_bio((__bio)->bi_rw, __bio)
 #endif
 

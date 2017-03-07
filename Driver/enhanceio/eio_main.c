@@ -128,7 +128,7 @@ static void eb_endio(struct eio_bio *ebio, int error)
 }
 
 static int
-eio_io_async_bvec(struct cache_c *dmc, struct eio_io_region *where, int rw,
+eio_io_async_bvec(struct cache_c *dmc, struct eio_io_region *where, unsigned op, unsigned op_flags,
 		  struct bio_vec *pages, unsigned nr_bvecs, eio_notify_fn fn,
 		  void *context, int hddio)
 {
@@ -154,7 +154,7 @@ eio_io_async_bvec(struct cache_c *dmc, struct eio_io_region *where, int rw,
 	req.context = context;
 	req.hddio = hddio;
 
-	error = eio_do_io(dmc, where, rw, &req);
+	error = eio_do_io(dmc, where, op, op_flags, &req);
 
 	return error;
 }
@@ -602,7 +602,7 @@ void eio_ssderror_diskread(struct kcached_job *job)
 	SECTOR_STATS(dmc->eio_stats.disk_reads, ebio->eb_size);
 	job->action = READDISK;
 
-	error = eio_io_async_bvec(dmc, &job->job_io_regions.disk, ebio->eb_dir,
+	error = eio_io_async_bvec(dmc, &job->job_io_regions.disk, REQ_OP_READ, 0,
 				  ebio->eb_bv, ebio->eb_nbvec,
 				  eio_disk_io_callback, job, 1);
 
@@ -923,7 +923,8 @@ void eio_do_readfill(struct work_struct *work)
 									(dmc,
 									&job->
 									job_io_regions.
-									cache, WRITE,
+									cache,
+									REQ_OP_WRITE, 0,
 									iebio->eb_bv,
 									iebio->eb_nbvec,
 									eio_io_callback,
@@ -997,7 +998,8 @@ void eio_do_readfill(struct work_struct *work)
 									(dmc,
 									&job->
 									job_io_regions.
-									cache, READ,
+									cache,
+									REQ_OP_READ, 0,
 									iebio->eb_bv,
 									iebio->eb_nbvec,
 									eio_io_callback,
@@ -1183,7 +1185,6 @@ static void eio_do_mdupdate(struct work_struct *work)
 	void *pg_virt_addr[2] = { NULL };
 	u_int8_t sector_bits[2] = { 0 };
 	int startbit, endbit;
-	int rw_flags = 0;
 
 	mdreq = container_of(work, struct mdupdate_request, work);
 	dmc = mdreq->dmc;
@@ -1328,8 +1329,7 @@ static void eio_do_mdupdate(struct work_struct *work)
 		 * Set SYNC for making metadata
 		 * writes as high priority.
 		 */
-		rw_flags = WRITE | REQ_SYNC;
-		error = eio_io_async_bvec(dmc, &region, rw_flags,
+		error = eio_io_async_bvec(dmc, &region, REQ_OP_WRITE, REQ_SYNC,
 					  &mdreq->mdblk_bvecs[i], 1,
 					  eio_mdupdate_callback, work, 0);
 		if (error && !(mdreq->error))
@@ -1636,7 +1636,7 @@ void eio_comply_dirty_thresholds(struct cache_c *dmc, index_t set)
 
 /* Do read from cache */
 static void
-eio_cached_read(struct cache_c *dmc, struct eio_bio *ebio, int rw_flags)
+eio_cached_read(struct cache_c *dmc, struct eio_bio *ebio, unsigned op, unsigned op_flags)
 {
 	struct kcached_job *job;
 	index_t index = ebio->eb_index;
@@ -1654,7 +1654,7 @@ eio_cached_read(struct cache_c *dmc, struct eio_bio *ebio, int rw_flags)
 		SECTOR_STATS(dmc->eio_stats.ssd_reads, ebio->eb_size);
 		atomic64_inc(&dmc->eio_stats.readcache);
 		err =
-			eio_io_async_bvec(dmc, &job->job_io_regions.cache, rw_flags,
+			eio_io_async_bvec(dmc, &job->job_io_regions.cache, op, op_flags,
 					  ebio->eb_bv, ebio->eb_nbvec,
 					  eio_io_callback, job, 0);
 
@@ -1880,7 +1880,7 @@ static int eio_uncached_write(struct cache_c *dmc, struct eio_bio *ebio)
 		job->action = WRITECACHE;
 		SECTOR_STATS(dmc->eio_stats.ssd_writes, ebio->eb_size);
 		atomic64_inc(&dmc->eio_stats.writecache);
-		err = eio_io_async_bvec(dmc, &job->job_io_regions.cache, WRITE,
+		err = eio_io_async_bvec(dmc, &job->job_io_regions.cache, REQ_OP_WRITE, 0,
 					ebio->eb_bv, ebio->eb_nbvec,
 					eio_io_callback, job, 0);
 	}
@@ -1920,7 +1920,7 @@ static int eio_uncached_write(struct cache_c *dmc, struct eio_bio *ebio)
 
 /* Serving write I/Os that can be fulfilled just by SSD */
 static int
-eio_cached_write(struct cache_c *dmc, struct eio_bio *ebio, int rw_flags)
+eio_cached_write(struct cache_c *dmc, struct eio_bio *ebio, unsigned op, unsigned op_flags)
 {
 	struct kcached_job *job;
 	int err = 0;
@@ -1960,9 +1960,8 @@ eio_cached_write(struct cache_c *dmc, struct eio_bio *ebio, int rw_flags)
 
 		SECTOR_STATS(dmc->eio_stats.ssd_writes, ebio->eb_size);
 		atomic64_inc(&dmc->eio_stats.writecache);
-		EIO_ASSERT((rw_flags & 1) == WRITE);
-		err =
-			eio_io_async_bvec(dmc, &job->job_io_regions.cache, rw_flags,
+		EIO_ASSERT(op == REQ_OP_WRITE);
+		err = eio_io_async_bvec(dmc, &job->job_io_regions.cache, op, op_flags,
 					  ebio->eb_bv, ebio->eb_nbvec,
 					  eio_io_callback, job, 0);
 
@@ -2145,7 +2144,7 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 	 */
 	VERIFY_BIO_FLAGS(ebio);
 	error = eio_io_async_bvec(dmc, &job->job_io_regions.disk,
-				  GET_BIO_FLAGS(ebio),
+				  GET_BIO_OP(ebio), GET_BIO_FLAGS(ebio),
 				  ebio->eb_bv, ebio->eb_nbvec,
 				  eio_io_callback, job, 1);
 
@@ -2470,14 +2469,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 
 	pr_debug("this needs to be removed immediately\n");
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,8,0))
-                if (bio_op(bio) == REQ_OP_DISCARD) {
-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
-                if (bio->bi_opf & REQ_DISCARD) {
-#else
-                if (bio_rw_flagged(bio, BIO_RW_DISCARD)) {
-#endif
-
+        if (bio_op(bio) == REQ_OP_DISCARD) {
 		pr_debug
 			("eio_map: Discard IO received. Invalidate incore start=%lu totalsectors=%d.\n",
 			(unsigned long)EIO_BIO_BI_SECTOR(bio),
@@ -2918,21 +2910,22 @@ eio_read(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 		 * Pass all orig bio flags except UNPLUG.
 		 * Unplug in the end if flagged.
 		 */
-		int rw_flags;
+		unsigned op;
+		unsigned op_flags;
 
-		rw_flags = 0;
+		op = REQ_OP_READ;
+		op_flags = 0;
 
 		bc->bc_dir = CACHED_READ;
 		ebio = ebegin;
 
 		VERIFY_BIO_FLAGS(ebio);
 
-		EIO_ASSERT((rw_flags & 1) == READ);
 		while (ebio) {
 			enext = ebio->eb_next;
 			ebio->eb_iotype = EB_MAIN_IO;
 
-			eio_cached_read(dmc, ebio, rw_flags);
+			eio_cached_read(dmc, ebio, op, op_flags);
 			ebio = enext;
 		}
 	}
@@ -2978,8 +2971,9 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 	} else {
 		/* Cached write. Start writes to SSD blocks */
 
-		int rw_flags;
-		rw_flags = 0;
+		unsigned op;
+		unsigned op_flags;
+		op_flags = 0;
 
 		bc->bc_dir = CACHED_WRITE;
 		if (bc->bc_mdwait) {
@@ -3004,8 +2998,8 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 			ebio->eb_iotype = EB_MAIN_IO;
 
 			if (!error) {
-
-				eio_cached_write(dmc, ebio, WRITE | rw_flags);
+				op = REQ_OP_WRITE;
+				eio_cached_write(dmc, ebio, op, op_flags);
 
 			} else {
 				unsigned long flags;
@@ -3301,7 +3295,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 				     to_bytes(where.count));
 			atomic_inc(&sioc.pending);
 			error =
-				eio_io_async_bvec(dmc, &where, READ, bvecs,
+				eio_io_async_bvec(dmc, &where, REQ_OP_READ, 0, bvecs,
 						  nr_bvecs, eio_sync_io_callback,
 						  &sioc, 0);
 			if (error) {
@@ -3355,7 +3349,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 			SECTOR_STATS(dmc->eio_stats.disk_writes,
 				     to_bytes(where.count));
 			atomic_inc(&sioc.pending);
-			error = eio_io_async_bvec(dmc, &where, WRITE | REQ_SYNC,
+			error = eio_io_async_bvec(dmc, &where, REQ_OP_WRITE, REQ_SYNC,
 						  bvecs, nr_bvecs,
 						  eio_sync_io_callback, &sioc,
 						  1);
@@ -3424,7 +3418,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 	where.sector = dmc->md_start_sect + INDEX_TO_MD_SECTOR(start_index);
 	where.count = eio_to_sector(alloc_size);
 	error =
-		eio_io_sync_pages(dmc, &where, WRITE, dmc->clean_mdpages,
+		eio_io_sync_pages(dmc, &where, REQ_OP_WRITE, 0, dmc->clean_mdpages,
 				  dmc->mdpage_count);
 
 	if (error)
