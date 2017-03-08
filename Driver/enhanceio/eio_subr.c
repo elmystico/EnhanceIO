@@ -221,7 +221,7 @@ eio_io_sync_pages(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
 
 int
 eio_io_sync_vm(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
-		  unsigned op_flags, struct bio_vec *pages, int num_bvecs)
+	       unsigned op_flags, struct bio_vec *pages, int num_bvecs)
 {
 	struct eio_io_request req;
 	int error;

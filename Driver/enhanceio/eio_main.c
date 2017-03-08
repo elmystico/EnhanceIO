@@ -2910,12 +2910,6 @@ eio_read(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 		 * Pass all orig bio flags except UNPLUG.
 		 * Unplug in the end if flagged.
 		 */
-		unsigned op;
-		unsigned op_flags;
-
-		op = REQ_OP_READ;
-		op_flags = 0;
-
 		bc->bc_dir = CACHED_READ;
 		ebio = ebegin;
 
@@ -2924,8 +2918,7 @@ eio_read(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 		while (ebio) {
 			enext = ebio->eb_next;
 			ebio->eb_iotype = EB_MAIN_IO;
-
-			eio_cached_read(dmc, ebio, op, op_flags);
+			eio_cached_read(dmc, ebio, REQ_OP_READ, 0);
 			ebio = enext;
 		}
 	}
@@ -2970,11 +2963,6 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 		eio_disk_io(dmc, bc->bc_bio, ebegin, bc, 0);
 	} else {
 		/* Cached write. Start writes to SSD blocks */
-
-		unsigned op;
-		unsigned op_flags;
-		op_flags = 0;
-
 		bc->bc_dir = CACHED_WRITE;
 		if (bc->bc_mdwait) {
 
@@ -2998,9 +2986,7 @@ eio_write(struct cache_c *dmc, struct bio_container *bc, struct eio_bio *ebegin)
 			ebio->eb_iotype = EB_MAIN_IO;
 
 			if (!error) {
-				op = REQ_OP_WRITE;
-				eio_cached_write(dmc, ebio, op, op_flags);
-
+				eio_cached_write(dmc, ebio, REQ_OP_WRITE, 0);
 			} else {
 				unsigned long flags;
 				u_int8_t cstate;
