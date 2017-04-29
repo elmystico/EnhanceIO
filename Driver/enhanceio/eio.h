@@ -566,7 +566,6 @@ struct mdupdate_request {
 	struct work_struct work;        /* work structure */
 	struct cache_c *dmc;            /* cache pointer */
 	index_t set;                    /* set index */
-	unsigned md_size;               /* metadata size */
 	unsigned mdbvec_count;          /* count of bvecs allocated. */
 	struct bio_vec *mdblk_bvecs;    /* bvecs for updating md_blocks */
 	atomic_t holdcount;             /* I/O hold count */
@@ -751,8 +750,6 @@ struct cache_c {
 	int readfill_in_prog;
 	struct eio_stats eio_stats;     /* Run time stats */
 	struct eio_errors eio_errors;   /* Error stats */
-	int max_clean_ios_set;          /* Max cleaning IOs per set */
-	int max_clean_ios_total;        /* Total max cleaning IOs */
 	int clean_inprog;
 	atomic64_t nr_dirty;
 	atomic64_t nr_ios;

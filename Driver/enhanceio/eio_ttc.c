@@ -655,7 +655,7 @@ static void eio_endio(struct bio *bio, int error)
 static int eio_dispatch_io_pages(struct cache_c *dmc,
 				 struct eio_io_region *where, unsigned op, unsigned op_flags,
 				 struct page **pagelist, struct eio_context *io,
-				 int hddio, int num_vecs, int sync)
+				 int hddio, int num_vecs)
 {
 	struct bio *bio;
 	struct page *page;
@@ -722,7 +722,7 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
 
 static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
 			   unsigned op_flags, struct bio_vec *bvec, struct eio_context *io,
-			   int hddio, int num_vecs, int sync)
+			   int hddio, int num_vecs)
 {
 	struct bio *bio;
 	struct page *page;
@@ -803,13 +803,13 @@ static int eio_async_io(struct cache_c *dmc, struct eio_io_region *where,
 	case EIO_BVECS:
 		err =
 			eio_dispatch_io(dmc, where, op, op_flags, req->dptr.pages, io,
-					req->hddio, req->num_bvecs, 0);
+					req->hddio, req->num_bvecs);
 		break;
 
 	case EIO_PAGES:
 		err =
 			eio_dispatch_io_pages(dmc, where, op, op_flags, req->dptr.plist, io,
-					      req->hddio, req->num_bvecs, 0);
+					      req->hddio, req->num_bvecs);
 		break;
 	}
 
@@ -854,11 +854,11 @@ static int eio_sync_io(struct cache_c *dmc, struct eio_io_region *where,
 	switch (req->mtype) {
 	case EIO_BVECS:
 		ret = eio_dispatch_io(dmc, where, op, op_flags, req->dptr.pages,
-				      &io, req->hddio, req->num_bvecs, 1);
+				      &io, req->hddio, req->num_bvecs);
 		break;
 	case EIO_PAGES:
 		ret = eio_dispatch_io_pages(dmc, where, op, op_flags, req->dptr.plist,
-					    &io, req->hddio, req->num_bvecs, 1);
+					    &io, req->hddio, req->num_bvecs);
 		break;
 	}
 

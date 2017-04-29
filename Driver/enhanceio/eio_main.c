@@ -84,7 +84,7 @@ static void bc_addfb(struct bio_container *bc, struct eio_bio *ebio)
 	ebio->eb_bc = bc;
 }
 
-static void bc_put(struct bio_container *bc, unsigned int doneio)
+static void bc_put(struct bio_container *bc)
 {
 	struct cache_c *dmc;
 	int data_dir;
@@ -123,9 +123,9 @@ static void eb_endio(struct eio_bio *ebio, int error)
 	if (ebio->eb_iotype == EB_MAIN_IO) {
 		if (error)
 			ebio->eb_bc->bc_error = error;
-		bc_put(ebio->eb_bc, ebio->eb_size);
+		bc_put(ebio->eb_bc);
 	} else
-		bc_put(ebio->eb_bc, 0);
+		bc_put(ebio->eb_bc);
 	ebio->eb_bc = NULL;
 	kfree(ebio);
 }
@@ -1175,8 +1175,6 @@ static void eio_do_mdupdate(struct work_struct *work)
 	index_t i;
 	index_t start_index;
 	index_t end_index;
-	index_t min_index;
-	index_t max_index;
 	struct flash_cacheblock *md_blocks;
 	struct eio_bio *ebio;
 	u_int8_t cstate;
@@ -1235,8 +1233,6 @@ static void eio_do_mdupdate(struct work_struct *work)
 	}
 
 	/* Update the md blocks with the pending mdlist */
-	min_index = start_index;
-	max_index = start_index;
 
 	pindex = 0;
 	md_blocks = (struct flash_cacheblock *)pg_virt_addr[pindex];
@@ -1253,12 +1249,6 @@ static void eio_do_mdupdate(struct work_struct *work)
 
 		md_blocks = (struct flash_cacheblock *)pg_virt_addr[pindex];
 		md_blocks[blk_index].cache_state = (VALID | DIRTY);
-
-		if (min_index > ebio->eb_index)
-			min_index = ebio->eb_index;
-
-		if (max_index < ebio->eb_index)
-			max_index = ebio->eb_index;
 
 		ebio = ebio->eb_next;
 	}
@@ -2643,7 +2633,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 out:
 
 	if (bc)
-		bc_put(bc, 0);
+		bc_put(bc);
 
 	return DM_MAPIO_SUBMITTED;
 }
