@@ -1329,7 +1329,7 @@ static void eio_do_mdupdate(struct work_struct *work)
 		 * Set SYNC for making metadata
 		 * writes as high priority.
 		 */
-		error = eio_io_async_bvec(dmc, &region, REQ_OP_WRITE, REQ_SYNC,
+		error = eio_io_async_bvec(dmc, &region, REQ_OP_WRITE, EIO_REQ_SYNC,
 					  &mdreq->mdblk_bvecs[i], 1,
 					  eio_mdupdate_callback, work, 0);
 		if (error && !(mdreq->error))
@@ -3335,7 +3335,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 			SECTOR_STATS(dmc->eio_stats.disk_writes,
 				     to_bytes(where.count));
 			atomic_inc(&sioc.pending);
-			error = eio_io_async_bvec(dmc, &where, REQ_OP_WRITE, REQ_SYNC,
+			error = eio_io_async_bvec(dmc, &where, REQ_OP_WRITE, EIO_REQ_SYNC,
 						  bvecs, nr_bvecs,
 						  eio_sync_io_callback, &sioc,
 						  1);
@@ -3495,6 +3495,7 @@ void eio_clean_aged_sets(struct work_struct *work)
 		if (set_index == LRU_NULL)
 			break;
 
+		/* if the most aged set is younger than clean_interval, break */
 		if ((EIO_DIV((cur_time - set_time), HZ)) <
 		    (dmc->sysctl_active.time_based_clean_interval * 60))
 			break;
