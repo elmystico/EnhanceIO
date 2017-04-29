@@ -89,8 +89,10 @@ static void bc_put(struct bio_container *bc, unsigned int doneio)
 	struct cache_c *dmc;
 	int data_dir;
 	long elapsed;
+	unsigned long flags;
 
 	if (atomic_dec_and_test(&bc->bc_holdcount)) {
+		spin_lock_irqsave(&bc->bc_lock, flags);
 		if (bc->bc_dmc->mode == CACHE_MODE_WB)
 			eio_release_io_resources(bc->bc_dmc, bc);
 		EIO_BIO_BI_SIZE(bc->bc_bio) = 0;
@@ -107,6 +109,7 @@ static void bc_put(struct bio_container *bc, unsigned int doneio)
 
 		EIO_BIO_ENDIO(bc->bc_bio, bc->bc_error);
 		atomic64_dec(&bc->bc_dmc->nr_ios);
+		spin_unlock_irqrestore(&bc->bc_lock, flags);
 		kfree(bc);
 	}
 }
