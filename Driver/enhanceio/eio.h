@@ -358,6 +358,11 @@ struct flash_cacheblock {
 #define METADATA_IO_BLOCKSIZE_SECT              (METADATA_IO_BLOCKSIZE / 512)
 #define SECTORS_PER_PAGE                        ((PAGE_SIZE) / 512)
 
+/* In bytes: */
+#define LOG_BLK_SIZE(eio_bdev)    (bdev_logical_block_size((eio_bdev)->bdev))
+/* In sectors: */
+#define LOG_BLK_SSIZE(eio_bdev)   (eio_to_sector(LOG_BLK_SIZE(eio_bdev)))
+
 /*
  * Cache persistence.
  */
@@ -695,10 +700,10 @@ struct eio_io_region {
 struct cache_c {
 	struct list_head cachelist;
 	make_request_fn *origmfn;
-	char dev_info;          /* partition or whole device */
+	char dev_info;                  /* partition or whole device */
 
-	sector_t dev_start_sect;
-	sector_t dev_end_sect;
+	sector_t dev_start_sect;        /* HDD */
+	sector_t dev_end_sect;          /* HDD */
 	int cache_rdonly;               /* protected by ttc_write lock */
 	struct eio_bdev *disk_dev;      /* Source device */
 	struct eio_bdev *cache_dev;     /* Cache device */
@@ -723,10 +728,10 @@ struct cache_c {
 
 	u_int64_t md_start_sect;        /* Sector no. at which Metadata starts */
 	u_int64_t md_sectors;           /* Numbers of metadata sectors, including header */
-	u_int64_t disk_size;            /* Source size */
-	u_int64_t size;                 /* Cache size */
+	u_int64_t disk_size;            /* Source size in 512b sectors*/
+	u_int64_t size;                 /* Cache size in block_size blocks */
 	u_int32_t assoc;                /* Cache associativity */
-	u_int32_t block_size;           /* Cache block size */
+	u_int32_t block_size;           /* Cache block size in 512b sectors */
 	u_int32_t block_shift;          /* Cache block size in bits */
 	u_int32_t block_mask;           /* Cache block mask */
 	u_int32_t consecutive_shift;    /* Consecutive blocks size in bits */
@@ -768,7 +773,7 @@ struct cache_c {
 	char ssd_uuid[DEV_PATHLEN];
 
 	struct cacheblock_md8 *cache_md8;
-	sector_t cache_size;                            /* Cache size passed to ctr(), used by dmsetup info */
+	sector_t cache_size;                            /* Cache size passed to ctr() in 512b sectors */
 	sector_t cache_dev_start_sect;                  /* starting sector of cache device */
 	u_int64_t index_zero;                           /* index of cache block with starting sector 0 */
 	u_int32_t num_sets;                             /* number of cache sets */
@@ -847,7 +852,7 @@ struct eio_bio {
 	unsigned eb_nbvec;              /*number of bio_vecs*/
 	int eb_dir;                     /* io direction*/
 	struct eio_bio *eb_next;        /*used for splitting reads*/
-	index_t eb_index;               /*for read bios*/
+	index_t eb_index;               /*for read bios - sector number in block_size sectors*/
 	atomic_t eb_holdcount;          /* ebio hold count, currently used only for dirty block I/O */
 	struct bio_vec eb_rbv[0];
 };

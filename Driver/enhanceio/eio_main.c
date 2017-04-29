@@ -1298,20 +1298,9 @@ static void eio_do_mdupdate(struct work_struct *work)
 	for (i = 0; i < mdreq->mdbvec_count; i++) {
 		if (!sector_bits[i])
 			continue;
-		startbit = -1;
-		j = 0;
-		while (startbit == -1) {
-			if (sector_bits[i] & (1 << j))
-				startbit = j;
-			j++;
-		}
-		endbit = -1;
-		j = 7;
-		while (endbit == -1) {
-			if (sector_bits[i] & (1 << j))
-				endbit = j;
-			j--;
-		}
+		startbit = ffs(sector_bits[i])-1;
+		endbit = fls(sector_bits[i])-1;
+
 		EIO_ASSERT(startbit <= endbit && startbit >= 0 && startbit <= 7 &&
 			   endbit >= 0 && endbit <= 7);
 		EIO_ASSERT(dmc->assoc != 128 || endbit <= 3);
@@ -1319,7 +1308,13 @@ static void eio_do_mdupdate(struct work_struct *work)
 			dmc->md_start_sect + INDEX_TO_MD_SECTOR(start_index) +
 			i * SECTORS_PER_PAGE + startbit;
 		region.count = endbit - startbit + 1;
-		mdreq->mdblk_bvecs[i].bv_offset = to_bytes(startbit);
+		/* Align IO to HW sectors on SSD device */
+		region.sector = region.sector /
+			LOG_BLK_SSIZE(dmc->cache_dev) * LOG_BLK_SSIZE(dmc->cache_dev);
+		region.count = (region.count  + LOG_BLK_SSIZE(dmc->cache_dev) - 1) /
+			LOG_BLK_SSIZE(dmc->cache_dev) * LOG_BLK_SSIZE(dmc->cache_dev);
+		mdreq->mdblk_bvecs[i].bv_offset =
+			to_bytes(startbit / LOG_BLK_SSIZE(dmc->cache_dev));
 		mdreq->mdblk_bvecs[i].bv_len = to_bytes(region.count);
 
 		EIO_ASSERT(region.sector <=
@@ -1456,7 +1451,7 @@ static void eio_post_mdupdate(struct work_struct *work)
 		if (mdreq->mdblk_bvecs) {
 			eio_free_wb_bvecs(mdreq->mdblk_bvecs,
 					  mdreq->mdbvec_count,
-					  SECTORS_PER_PAGE);
+					  BLKSIZE_4K);
 			kfree(mdreq->mdblk_bvecs);
 		}
 
@@ -2343,12 +2338,13 @@ static int eio_alloc_mdreqs(struct cache_c *dmc, struct bio_container *bc)
 		for (i = cur_seq->first_set; i <= cur_seq->last_set; i++) {
 			mdreq = kzalloc(sizeof(*mdreq), GFP_NOWAIT);
 			if (mdreq) {
-				mdreq->md_size =
-					dmc->assoc *
-					sizeof(struct flash_cacheblock);
+
+				/* nr_bvecs is the number of pages required to fit all 
+				 * flash_cacheblock structures in. Must be 1 or 2 (hardcoded)
+				 */
 				nr_bvecs =
-					IO_BVEC_COUNT(mdreq->md_size,
-						      SECTORS_PER_PAGE);
+					IO_PAGE_COUNT(dmc->assoc *
+					              sizeof(struct flash_cacheblock));
 
 				mdreq->mdblk_bvecs =
 					(struct bio_vec *)
@@ -2360,10 +2356,10 @@ static int eio_alloc_mdreqs(struct cache_c *dmc, struct bio_container *bc)
 						eio_alloc_wb_bvecs(mdreq->
 								   mdblk_bvecs,
 								   nr_bvecs,
-								   SECTORS_PER_PAGE);
+								   BLKSIZE_4K);
 					if (ret) {
 						pr_err
-							("eio_alloc_mdreqs: failed to allocated pages\n");
+							("eio_alloc_mdreqs: failed to allocate pages\n");
 						kfree(mdreq->mdblk_bvecs);
 						mdreq->mdblk_bvecs = NULL;
 					}
@@ -2383,7 +2379,7 @@ static int eio_alloc_mdreqs(struct cache_c *dmc, struct bio_container *bc)
 								  mdblk_bvecs,
 								  mdreq->
 								  mdbvec_count,
-								  SECTORS_PER_PAGE);
+								  BLKSIZE_4K);
 						kfree(mdreq->mdblk_bvecs);
 					}
 					kfree(mdreq);
@@ -2436,7 +2432,7 @@ eio_release_io_resources(struct cache_c *dmc, struct bio_container *bc)
 		if (mdreq->mdblk_bvecs) {
 			eio_free_wb_bvecs(mdreq->mdblk_bvecs,
 					  mdreq->mdbvec_count,
-					  SECTORS_PER_PAGE);
+					  BLKSIZE_4K);
 			kfree(mdreq->mdblk_bvecs);
 		}
 		kfree(mdreq);
@@ -2472,7 +2468,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 
 	pr_debug("this needs to be removed immediately\n");
 
-        if (bio_op(bio) == REQ_OP_DISCARD) {
+	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pr_debug
 			("eio_map: Discard IO received. Invalidate incore start=%lu totalsectors=%d.\n",
 			(unsigned long)EIO_BIO_BI_SECTOR(bio),
@@ -2668,6 +2664,12 @@ static int eio_read_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	unsigned long flags;
 	u_int8_t cstate;
 
+	/* We can do it before locking. If I/O is not aligned on SSD
+	 * device, return as cache miss
+	 */
+	if (EIO_REM(ebio->eb_size, LOG_BLK_SIZE(dmc->cache_dev)))
+		return 0;
+
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 
 	res = eio_lookup(dmc, ebio, &index);
@@ -2786,6 +2788,12 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	int retval;
 	u_int8_t cstate;
 	unsigned long flags;
+
+	/* We can do it before locking. If I/O is not aligned on SSD
+	 * device, return as uncacheable
+	 */
+	if (EIO_REM(ebio->eb_size, LOG_BLK_SIZE(dmc->cache_dev)))
+		return 0;
 
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 
@@ -3257,7 +3265,10 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 
 	for (i = start_index; i < end_index; i++) {
 		if (EIO_CACHE_STATE_GET(dmc, i) == CLEAN_INPROG) {
-
+			/* 'total' contains number of contiguous blocks
+			 * with CLEAN_INPROG flag set, j points to the
+			 * last block in contiguous chunk
+			 */
 			for (j = i; ((j < end_index) &&
 				(EIO_CACHE_STATE_GET(dmc, j) == CLEAN_INPROG));
 				j++);
@@ -3274,7 +3285,9 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 					       dmc->block_size, total, &nr_bvecs);
 			EIO_ASSERT(bvecs != NULL);
 			EIO_ASSERT(nr_bvecs > 0);
-
+			/* This I/O is aligned to block_size, as md_sectors is
+			 * aligned to 8192.
+			 */
 			where.bdev = dmc->cache_dev->bdev;
 			where.sector =
 				(i << dmc->block_shift) + dmc->md_sectors;
@@ -3293,6 +3306,7 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 			}
 
 			bvecs = NULL;
+			/* Fast forward to the next unscheduled block */
 			i = j;
 		}
 	}
@@ -3300,6 +3314,8 @@ eio_clean_set(struct cache_c *dmc, index_t set, int whole, int force)
 	 * In above for loop, submit all READ I/Os to SSD
 	 * and unplug the device for immediate submission to
 	 * underlying device driver.
+	 *(This does not do anything for now - unplug functions
+	 * are not implemented)
 	 */
 	eio_unplug_cache_device(dmc);
 
