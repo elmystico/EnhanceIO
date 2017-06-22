@@ -1681,8 +1681,8 @@ int eio_cache_create(struct cache_rec_short *cache)
 	if (persistence == CACHE_RELOAD)
 		goto init;      /* Skip reading cache parameters from command line */
 
-	cache->cr_src_sector_size = LOG_BLK_SIZE(dmc->disk_dev);
-	cache->cr_ssd_sector_size = LOG_BLK_SIZE(dmc->cache_dev);
+	cache->cr_src_sector_size = LOG_BLK_SIZE(dmc->disk_dev->bdev);
+	cache->cr_ssd_sector_size = LOG_BLK_SIZE(dmc->cache_dev->bdev);
 
 	if (cache->cr_blksize && cache->cr_ssd_sector_size) {
 		dmc->block_size = cache->cr_blksize >> SECTOR_SHIFT;

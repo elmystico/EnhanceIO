@@ -799,7 +799,7 @@ static void eio_enqueue_readfill(struct cache_c *dmc, struct kcached_job *job)
 	/* Insert job in sorted order of cache sector */
 	j1 = &dmc->readfill_queue;
 	while (*j1 != NULL && (*j1)->job_io_regions.cache.sector <
-	       job->job_io_regions.cache.sector)
+		job->job_io_regions.cache.sector)
 		j1 = &(*j1)->next;
 	next = *j1;
 	*j1 = job;
@@ -839,8 +839,7 @@ static inline void eio_do_readfill_bio(struct cache_c *dmc,
 		eb_endio(iebio, 0);
 		iebio = NULL;
 	} else if ((EIO_CACHE_STATE_GET(dmc, index) &
-		(VALID | DISKREADINPROG)) ==
-		(VALID | DISKREADINPROG)) {
+			(VALID | DISKREADINPROG)) == (VALID | DISKREADINPROG)) {
 		/* Do readfill. */
 		EIO_CACHE_STATE_SET(dmc, index, VALID | CACHEWRITEINPROG);
 		EIO_ASSERT(EIO_DBN_GET(dmc, index) == iebio->eb_sector);
@@ -944,9 +943,9 @@ void eio_do_readfill(struct work_struct *work)
 	if (dmc->readfill_in_prog)
 		goto out;
 	dmc->readfill_in_prog = 1;
-	while (dmc->readfill_queue != NULL) {
+	while (dmc->readfill_queue != NULL) { /* this loop is going to be run only once, right? */
 		joblist = dmc->readfill_queue;
-		dmc->readfill_queue = NULL;
+		dmc->readfill_queue = NULL; /* <--- we are not going to make another loop spin */
 		spin_unlock_irqrestore(&dmc->cache_spin_lock, flags);
 		for (job = joblist; job != NULL; job = nextjob) {
 			struct eio_bio *iebio;
@@ -1214,12 +1213,12 @@ static void eio_do_mdupdate(struct work_struct *work)
 			i * SECTORS_PER_PAGE + startbit;
 		region.count = endbit - startbit + 1;
 		/* Align IO to HW sectors on SSD device */
-		region.sector = region.sector /
-			LOG_BLK_SSIZE(dmc->cache_dev) * LOG_BLK_SSIZE(dmc->cache_dev);
-		region.count = (region.count  + LOG_BLK_SSIZE(dmc->cache_dev) - 1) /
-			LOG_BLK_SSIZE(dmc->cache_dev) * LOG_BLK_SSIZE(dmc->cache_dev);
+		region.sector =
+			EIO_ALIGN_SECTOR(dmc->cache_dev->bdev, region.sector);
+		region.count =
+			EIO_ALIGN_SCOUNT(dmc->cache_dev->bdev, region.count);
 		mdreq->mdblk_bvecs[i].bv_offset =
-			to_bytes(startbit / LOG_BLK_SSIZE(dmc->cache_dev));
+			to_bytes(startbit / LOG_BLK_SSIZE(dmc->cache_dev->bdev));
 		mdreq->mdblk_bvecs[i].bv_len = to_bytes(region.count);
 
 		EIO_ASSERT(region.sector <=
@@ -1903,6 +1902,10 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 				    int iotype)
 {
 	struct eio_bio *ebio;
+	/*
+	 * residual_biovec is size in bytes of bvec part, that is already mapped
+	 * to the previous eio_bio
+	 */
 	int residual_biovec = *presidual_biovec;
 	int numbvecs = 0;
 	int ios;
@@ -1916,13 +1919,18 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 		while (ios > 0) {
 			int len;
 
-			if (ios == iosize)
+			if (ios == iosize) {
 				len =
 					bio->bi_io_vec[bvecindex].bv_len -
 					residual_biovec;
-			else
+			} else {
+				/*
+				 * Caller MUST be sure, that iosize
+				 * does not exceed remaining bytes in bio,
+				 * otherwise bvecindex will overrun bi_vcnt here
+				 */
 				len = bio->bi_io_vec[bvecindex].bv_len;
-
+			}
 			numbvecs++;
 			if (len > ios)
 				len = ios;
@@ -1969,6 +1977,10 @@ static struct eio_bio *eio_new_ebio(struct cache_c *dmc, struct bio *bio,
 		while (ios > 0) {
 			numbvecs++;
 			if ((unsigned)ios < bio->bi_io_vec[EIO_BIO_BI_IDX(bio)].bv_len) {
+				/*
+				 * do not increase bi_idx in this case, new ebio
+				 * will be created from the rest of this bio.
+				 */
 				residual_biovec = ios;
 				ios = 0;
 			} else {
@@ -2369,7 +2381,9 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	struct eio_bio *eend = NULL;
 	struct eio_bio *enext = NULL;
 
-	EIO_ASSERT(EIO_BIO_BI_IDX(bio) == 0);
+	if (EIO_BIO_BI_IDX(bio) != 0)
+		pr_warn("in eio_map bio_idx is %u", EIO_BIO_BI_IDX(bio));
+//	EIO_ASSERT(EIO_BIO_BI_IDX(bio) == 0);
 
 	pr_debug("this needs to be removed immediately\n");
 
@@ -2483,13 +2497,19 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	 * - If force uncached I/O is set, invalidate the cache blocks for the I/O
 	 */
 
-	if (force_uncached)
+	if (force_uncached) {
 		eio_inval_range(dmc, snum, totalio);
-	else {
+	} else {
+	/*
+	 * whilst disk bio might be one long contiguous io with huge length, its
+	 * mapped counterparts are scattered all along the cache device, hence
+	 * we need to split it to many ebios.
+	 * iosize of these ebios is <= dmc->block_size
+	 */
 		while (biosize) {
 			iosize = eio_get_iosize(dmc, snum, biosize);
 			ebio = eio_new_ebio(dmc, bio, &residual_biovec, snum,
-					iosize, bc, EB_SUBORDINATE_IO);
+			                    iosize, bc, EB_SUBORDINATE_IO);
 			if (IS_ERR(ebio)) {
 				bc->bc_error = -ENOMEM;
 				break;
@@ -2568,12 +2588,6 @@ static int eio_read_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	int retval = 0;
 	unsigned long flags;
 	u_int8_t cstate;
-
-	/* We can do it before locking. If I/O is not aligned on SSD
-	 * device, return as cache miss
-	 */
-	if (EIO_REM(ebio->eb_size, LOG_BLK_SIZE(dmc->cache_dev)))
-		return 0;
 
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 
@@ -2693,12 +2707,6 @@ static int eio_write_peek(struct cache_c *dmc, struct eio_bio *ebio)
 	int retval;
 	u_int8_t cstate;
 	unsigned long flags;
-
-	/* We can do it before locking. If I/O is not aligned on SSD
-	 * device, return as uncacheable
-	 */
-	if (EIO_REM(ebio->eb_size, LOG_BLK_SIZE(dmc->cache_dev)))
-		return 0;
 
 	spin_lock_irqsave(&dmc->cache_sets[ebio->eb_cacheset].cs_lock, flags);
 

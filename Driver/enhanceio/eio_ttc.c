@@ -90,15 +90,13 @@ void eio_delete_misc_device()
  * the IO. In older kernels however, there is a possibility for the request
  * function to return 1 and expect us to handle the IO redirection (see raid0
  * implementation in kernel 2.6.32). We must check the return value
- * and potentionally resubmit the IO.
+ * and potentially resubmit the IO.
  */
 static inline
 void hdd_make_request(make_request_fn *origmfn, struct bio *bio)
 {
 	struct request_queue *q = NULL;
-#ifndef COMPAT_MAKE_REQUEST_FN_SUBMITS_IO
-	int ret;
-#endif
+	int __maybe_unused ret;
 	q = bdev_get_queue(bio->bi_bdev);
 	if (unlikely(!q)) {
 		pr_err("EIO: Trying to access nonexistent block-device\n");
@@ -714,36 +712,266 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
 	return ret;
 }
 
+static void end_unaligned_free(struct bio *bio, int error)
+{
+	EIO_ENDIO_FN_START;
+	struct unaligned_bio *un_bio = bio->bi_private;
+	struct eio_context *io = un_bio->io;
+
+	put_page(un_bio->page);
+	un_bio->page = NULL;
+	kfree(un_bio);
+	bio_put(bio);
+	eio_dec_count(io, error);
+}
+
+
+static void end_unaligned_io(struct bio *bio, int error)
+{
+	EIO_ENDIO_FN_START;
+	unsigned char *loc_mem, *rem_mem;
+	int remain, offset;
+	struct unaligned_bio *un_bio = bio->bi_private;
+	struct bio *write_bio;
+
+	if (error) {
+		pr_err("end_unaligned_io: I/O ERROR %d", error);
+		goto out;
+	}
+
+	loc_mem = kmap_atomic(un_bio->page);
+	remain = un_bio->len;
+	offset = un_bio->offset;
+	while (remain > 0) {
+		unsigned rem_offset = un_bio->bvecs->bv_offset;
+		unsigned rem_len = un_bio->bvecs->bv_len;
+		unsigned bytes = 0;
+		if (un_bio->bvecs == un_bio->remain_vec) {
+			rem_len -= un_bio->vec_remain;
+			EIO_ASSERT (rem_len > 0);
+		}
+		if (un_bio->bvecs == un_bio->offset_vec) {
+			rem_len -= un_bio->vec_offset;
+			rem_offset += un_bio->vec_offset;
+			EIO_ASSERT (rem_len > 0);
+		}
+		bytes = min_t(unsigned, rem_len, remain);
+		rem_mem = kmap_atomic(un_bio->bvecs->bv_page);
+		if (un_bio->op == REQ_OP_READ) {
+			memcpy(rem_mem + rem_offset, loc_mem + offset, bytes);
+		} else if (un_bio->op == REQ_OP_WRITE) {
+			memcpy(loc_mem + offset, rem_mem + rem_offset, bytes);
+		}
+		kunmap_atomic(rem_mem);
+		remain -= bytes;
+		if (remain > 0) {
+			/*
+			 * completed this vec, but there still data to
+			 * transfer, move to the next vector in
+			 * un_bio->bvecs
+			 */
+			un_bio->bvecs = un_bio->bvecs + 1;
+			offset += bytes;
+		}
+	}
+
+	kunmap_atomic(loc_mem);
+
+	if (un_bio->op == REQ_OP_WRITE) {
+		write_bio = bio_alloc(GFP_NOIO, 1);
+		if (unlikely(!write_bio)) {
+			pr_err("end_unaligned: Unable to allocate bio.\n");
+			error = -ENOMEM;
+			goto out;
+		}
+		if (unlikely(!bio_add_page(write_bio, un_bio->page,
+				           LOG_BLK_SIZE(bio->bi_bdev), 0))) {
+			pr_err("end_unaligned: Unable to add page to bio.\n");
+			bio_put(write_bio);
+			error = -ENOMEM;
+			goto out;
+		}
+		EIO_BIO_BI_SECTOR(write_bio) = EIO_BIO_BI_SECTOR(bio);
+		write_bio->bi_bdev = bio->bi_bdev;
+		write_bio->bi_end_io = end_unaligned_free;
+		write_bio->bi_private = un_bio;
+		bio_set_op_attrs(write_bio, REQ_OP_WRITE, EIO_REQ_SYNC);
+		bio_put(bio);
+		submit_bio(write_bio);
+
+		return;
+	}
+
+out:
+	end_unaligned_free(bio, error);
+}
+
+static int do_unaligned_io(struct unaligned_bio *un_bio, sector_t sector,
+                           sector_t remaining, struct block_device *bdev,
+                           int *compl_vecs, unsigned long *vec_remain)
+{
+	struct bio *bio;
+	struct bio_vec *bvec;
+	int remain;
+
+	/* alloc page and bio_add_page it */
+
+	bio = bio_alloc(GFP_NOIO, 1);
+	if (unlikely(!bio)) {
+		pr_err("do_unaligned: Unable to allocate bio.\n");
+		goto error_out;
+	}
+	un_bio->page = alloc_page(GFP_NOIO | __GFP_ZERO);
+	if (unlikely(!un_bio->page)) {
+		pr_err("do_unaligned: Unable to allocate page.\n");
+		goto free_bio;
+	}
+
+	if (unlikely(!bio_add_page(bio, un_bio->page, LOG_BLK_SIZE(bdev), 0))) {
+		pr_err("do_unaligned: Unable to add page to bio.\n");
+		goto free_page;
+	}
+
+	bvec = un_bio->bvecs;
+
+	EIO_BIO_BI_SECTOR(bio) =
+		EIO_ALIGN_SECTOR(bdev, sector);
+
+	un_bio->offset = to_bytes(sector - EIO_BIO_BI_SECTOR(bio));
+	un_bio->len = min_t(int, (EIO_BIO_BI_SIZE(bio) - un_bio->offset),
+	                    to_bytes(remaining));
+
+	if (*vec_remain > 0) {
+		remain = un_bio->len - *vec_remain;
+		un_bio->offset_vec = bvec;
+		un_bio->vec_offset = bvec->bv_len - *vec_remain;
+	} else {
+		remain = un_bio->len - bvec->bv_len;
+	}
+	*vec_remain = 0;
+	while (remain > 0) {
+		/*
+		 * completed this vec, move to the next one if
+		 * there are still data to transfer (remain > 0)
+		 */
+		bvec = bvec +1;
+		(*compl_vecs)++;
+		remain -= bvec->bv_len;
+	}
+
+	if (remain < 0) {
+		/*
+		 * vec has more data to transfer
+		 * remain is NEGATIVE here
+		 */
+		un_bio->remain_vec = bvec;
+		un_bio->vec_remain = -remain;
+		*vec_remain = -remain;
+	}
+	if (remain == 0 || remaining == eio_to_sector(un_bio->len)) {
+		/*
+		 * mark vector as completed if it has no more space (remain==0)
+		 * or if it was the last one and we finished with this io
+		 */
+		(*compl_vecs)++;
+	}
+
+	bio->bi_bdev = bdev;
+	bio->bi_end_io = end_unaligned_io;
+	bio->bi_private = un_bio;
+	bio_set_op_attrs(bio, REQ_OP_READ, EIO_REQ_SYNC);
+	atomic_inc(&un_bio->io->count);
+	submit_bio(bio);
+	return eio_to_sector(un_bio->len);
+
+free_page:
+	put_page(un_bio->page);
+	un_bio->page = NULL;
+free_bio:
+	bio_put(bio);
+error_out:
+	return -ENOMEM;
+}
+
 /*
  * This function will dispatch the i/o. It also takes care of
  * splitting the large I/O requets to smaller I/Os which may not
  * fit into single bio.
  */
 
-static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where, unsigned op,
-			   unsigned op_flags, struct bio_vec *bvec, struct eio_context *io,
-			   int hddio, int num_vecs)
+static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
+                           unsigned op, unsigned op_flags, struct bio_vec *bvec,
+                           struct eio_context *io, int hddio, int num_vecs)
 {
 	struct bio *bio;
 	struct page *page;
-	unsigned long len;
+	struct unaligned_bio *un_bio;
+	unsigned long len, vec_remain;
 	unsigned offset;
 	int num_bvecs;
 	int remaining_bvecs = num_vecs;
 	int ret = 0;
 
 	sector_t remaining = where->count;
+	sector_t remaining_aligned;
 
+	vec_remain = 0;
 	do {
+		/* align */
+		while (remaining &&
+			(EIO_SEC_UNALIGNED
+				(where->bdev,
+			         where->sector + where->count - remaining) ||
+			 remaining < LOG_BLK_SSIZE(where->bdev))) {
+			int vecs = 0;
+			int r;
+
+			un_bio = kzalloc(sizeof(*un_bio), GFP_NOIO);
+			un_bio->bvecs = bvec;
+			un_bio->io = io;
+			un_bio->op = op;
+			pr_info("dispatch_io: processing unaligned I/O: sector %lu, count %lu",
+	                        (where->sector + where->count - remaining),
+			        remaining);
+			r = do_unaligned_io(un_bio, (where->sector +
+				            where->count - remaining),
+				            remaining, where->bdev, &vecs,
+				            &vec_remain);
+			if (r < 0) {
+				kfree(un_bio);
+				return r;
+			}
+			remaining -= (sector_t)r;
+			remaining_bvecs -= vecs;
+			bvec = bvec + vecs;
+		}
+		if (!remaining) {
+			break;
+		}
 		/* Verify that num_vecs should not cross the threshhold */
 		/* Check how many max bvecs bdev supports */
-		num_bvecs =
-			min_t(int,
-                            EIO_BIO_GET_NR_VECS(where->bdev),
-                            remaining_bvecs);
+
+		if (remaining_bvecs > EIO_BIO_GET_NR_VECS(where->bdev)) {
+			num_bvecs = EIO_BIO_GET_NR_VECS(where->bdev);
+			/*
+			 * TODO:
+			 * we assume the worst case, when 1 bvec contains only
+			 * 1 sector - can be less effective sometimes. Also,
+			 * in both cases there is overprovisioning of
+			 * bvecs in bio
+			 */
+			remaining_aligned =
+				EIO_ALIGN_SECTOR(where->bdev,
+				                 to_bytes(num_bvecs));
+		} else {
+			num_bvecs = remaining_bvecs;
+			remaining_aligned =
+				EIO_ALIGN_SECTOR(where->bdev, remaining);
+		}
 		bio = bio_alloc(GFP_NOIO, num_bvecs);
 		bio->bi_bdev = where->bdev;
-		EIO_BIO_BI_SECTOR(bio) = where->sector + (where->count - remaining);
+		EIO_BIO_BI_SECTOR(bio) = where->sector +
+			                 (where->count - remaining);
 
 		/* Remap the start sector of partition */
 		if (hddio)
@@ -753,20 +981,35 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where, uns
 		bio->bi_end_io = eio_endio;
 		bio->bi_private = io;
 
-		while (remaining) {
+		while (remaining_aligned > 0) {
 			page = bvec->bv_page;
-			len =
-				min_t(unsigned long, bvec->bv_len,
-				      to_bytes(remaining));
 			offset = bvec->bv_offset;
+			if (vec_remain > 0) {
+				len = min_t(unsigned long, vec_remain,
+				            to_bytes(remaining_aligned));
+				offset += bvec->bv_len - vec_remain;
+			} else {
+				len = min_t(unsigned long, bvec->bv_len,
+				            to_bytes(remaining_aligned));
+			}
 
 			if (!bio_add_page(bio, page, len, offset))
 				break;
 
-			offset = 0;
+			remaining_aligned -= eio_to_sector(len);
 			remaining -= eio_to_sector(len);
-			bvec = bvec + 1;
-			remaining_bvecs--;
+			if (remaining && (len < bvec->bv_len - vec_remain)) {
+				/*
+				 * vector is not finished and there are more io,
+				 * do not forward bvec, set vec_remain to not
+				 * yet processed remain of this vector
+				 */
+				vec_remain = bvec->bv_len - len;
+			} else {
+				bvec = bvec + 1;
+				vec_remain = 0;
+				remaining_bvecs--;
+			}
 		}
 
 		atomic_inc(&io->count);
@@ -782,7 +1025,8 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where, uns
 }
 
 static int eio_async_io(struct cache_c *dmc, struct eio_io_region *where,
-			unsigned op, unsigned op_flags, struct eio_io_request *req)
+                        unsigned op, unsigned op_flags,
+                        struct eio_io_request *req)
 {
 	struct eio_context *io;
 	int err = 0;
@@ -802,14 +1046,16 @@ static int eio_async_io(struct cache_c *dmc, struct eio_io_region *where,
 	switch (req->mtype) {
 	case EIO_BVECS:
 		err =
-			eio_dispatch_io(dmc, where, op, op_flags, req->dptr.pages, io,
-					req->hddio, req->num_bvecs);
+			eio_dispatch_io(dmc, where, op, op_flags,
+			                req->dptr.pages, io,
+			                req->hddio, req->num_bvecs);
 		break;
 
 	case EIO_PAGES:
 		err =
-			eio_dispatch_io_pages(dmc, where, op, op_flags, req->dptr.plist, io,
-					      req->hddio, req->num_bvecs);
+			eio_dispatch_io_pages(dmc, where, op, op_flags,
+			                      req->dptr.plist, io,
+			                      req->hddio, req->num_bvecs);
 		break;
 	}
 
@@ -834,7 +1080,8 @@ retry:
 }
 
 static int eio_sync_io(struct cache_c *dmc, struct eio_io_region *where,
-		       unsigned op, unsigned op_flags, struct eio_io_request *req)
+		       unsigned op, unsigned op_flags,
+	               struct eio_io_request *req)
 {
 	int ret = 0;
 	struct eio_context io;
@@ -849,7 +1096,7 @@ static int eio_sync_io(struct cache_c *dmc, struct eio_io_region *where,
 	io.context = NULL;
 
 	/* For synchronous I/Os pass SYNC */
-	op_flags |= REQ_SYNC;
+	op_flags |= EIO_REQ_SYNC;
 
 	switch (req->mtype) {
 	case EIO_BVECS:
@@ -857,8 +1104,9 @@ static int eio_sync_io(struct cache_c *dmc, struct eio_io_region *where,
 				      &io, req->hddio, req->num_bvecs);
 		break;
 	case EIO_PAGES:
-		ret = eio_dispatch_io_pages(dmc, where, op, op_flags, req->dptr.plist,
-					    &io, req->hddio, req->num_bvecs);
+		ret = eio_dispatch_io_pages(dmc, where, op, op_flags,
+			                    req->dptr.plist, &io, req->hddio,
+			                    req->num_bvecs);
 		break;
 	}
 
@@ -908,7 +1156,8 @@ void eio_process_zero_size_bio(struct cache_c *dmc, struct bio *origbio)
 	eio_issue_empty_barrier_flush(dmc->cache_dev->bdev, NULL,
 				      EIO_SSD_DEVICE, NULL, op, op_flags);
 	eio_issue_empty_barrier_flush(dmc->disk_dev->bdev, origbio,
-				      EIO_HDD_DEVICE, dmc->origmfn, op, op_flags);
+				      EIO_HDD_DEVICE, dmc->origmfn, op,
+				      op_flags);
 }
 
 static void eio_bio_end_empty_barrier(struct bio *bio, int error)
@@ -1199,9 +1448,10 @@ static int eio_mode_switch(struct cache_c *dmc, u_int32_t mode)
 		eio_free_wb_resources(dmc);
 		dmc->mode = mode;
 	} else {                /* (RO -> WT) or (WT -> RO) */
-		EIO_ASSERT(((dmc->mode == CACHE_MODE_RO) && (mode == CACHE_MODE_WT))
-			   || ((dmc->mode == CACHE_MODE_WT) &&
-			       (mode == CACHE_MODE_RO)));
+		EIO_ASSERT(((dmc->mode == CACHE_MODE_RO) &&
+			    (mode == CACHE_MODE_WT)) ||
+			   ((dmc->mode == CACHE_MODE_WT) &&
+			    (mode == CACHE_MODE_RO)));
 		dmc->mode = mode;
 	}
 

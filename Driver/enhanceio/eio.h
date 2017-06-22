@@ -333,7 +333,7 @@ struct flash_cacheblock {
  */
 #define IO_BVEC_COUNT(x, blksize) ({		\
 					   int count = IO_PAGE_COUNT(x);	   \
-					   switch ((blksize)) {			    \
+					   switch ((blksize)) {			   \
 					   case BLKSIZE_2K:			   \
 						   count = count * 2;		   \
 						   break;			   \
@@ -359,9 +359,12 @@ struct flash_cacheblock {
 #define SECTORS_PER_PAGE                        ((PAGE_SIZE) / 512)
 
 /* In bytes: */
-#define LOG_BLK_SIZE(eio_bdev)    (bdev_logical_block_size((eio_bdev)->bdev))
+#define LOG_BLK_SIZE(bdev)    (bdev_logical_block_size(bdev))
 /* In sectors: */
-#define LOG_BLK_SSIZE(eio_bdev)   (eio_to_sector(LOG_BLK_SIZE(eio_bdev)))
+#define LOG_BLK_SSIZE(bdev)   (eio_to_sector(LOG_BLK_SIZE(bdev)))
+#define EIO_SEC_UNALIGNED(bdev, sector) ((sector) & ((unsigned long)(LOG_BLK_SSIZE(bdev) - 1)))
+#define EIO_ALIGN_SECTOR(bdev, sector) ((sector) & (~(unsigned long)(LOG_BLK_SSIZE(bdev) - 1)))
+#define EIO_ALIGN_SCOUNT(bdev, scount) (EIO_ALIGN_SECTOR((bdev),(scount + LOG_BLK_SSIZE(bdev) - 1)))
 
 /*
  * Cache persistence.
@@ -832,12 +835,14 @@ struct job_io_regions {
 	struct eio_io_region cache;     /* has to be the second member */
 };
 
-#define EB_MAIN_IO 1
-#define EB_SUBORDINATE_IO 2
-#define EB_INVAL 4
 #define GET_BIO_OP(ebio)                bio_op((ebio)->eb_bc->bc_bio)
 #define GET_BIO_FLAGS(ebio)             bio_flags((ebio)->eb_bc->bc_bio)
 #define VERIFY_BIO_FLAGS(ebio)          EIO_ASSERT((ebio) && (ebio)->eb_bc && (ebio)->eb_bc->bc_bio)
+
+/* eio_bio eb_iotype */
+#define EB_MAIN_IO 1          /* I/O errors are propagated only if eio_bio type is EB_MAIN_IO*/
+#define EB_SUBORDINATE_IO 2
+#define EB_INVAL 4
 
 struct eio_bio {
 	int eb_iotype;
@@ -914,6 +919,19 @@ struct ssd_rm_list {
 struct dbn_index_pair {
 	sector_t dbn;
 	index_t index;
+};
+
+struct unaligned_bio {
+	struct bio_vec *bvecs;
+	struct eio_context *io;
+	struct page *page;
+	unsigned long offset;
+	unsigned long len;
+	int op;
+	struct bio_vec *remain_vec;
+	struct bio_vec *offset_vec;
+	unsigned long vec_remain;
+	unsigned long vec_offset;
 };
 
 /*
