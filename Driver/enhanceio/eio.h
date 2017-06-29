@@ -641,6 +641,7 @@ struct eio_stats {
 	atomic64_t rdtime_ms;   /* total read time in ms */
 	atomic64_t readcount;   /* total reads received so far */
 	atomic64_t writecount;  /* total writes received so far */
+	atomic64_t unaligned_ios;
 };
 
 #define PENDING_JOB_HASH_SIZE                   32

@@ -240,8 +240,8 @@ int eio_ttc_activate(struct cache_c *dmc)
 	 */
 
 	msleep(1);
-	eio_issue_empty_barrier_flush(dmc->disk_dev->bdev, NULL,
-				      EIO_HDD_DEVICE, dmc->origmfn, REQ_OP_FLUSH, WRITE_FLUSH);
+	eio_issue_empty_barrier_flush(dmc->disk_dev->bdev, NULL, EIO_HDD_DEVICE,
+	                              dmc->origmfn, REQ_OP_FLUSH, WRITE_FLUSH);
 	up_write(&eio_ttc_lock[index]);
 
 out:
@@ -304,7 +304,8 @@ deactivate:
 			if (dmc == dmc1)
 				continue;
 
-			if (dmc1->disk_dev->bdev->bd_contains != bdev->bd_contains)
+			if (dmc1->disk_dev->bdev->bd_contains !=
+				bdev->bd_contains)
 				continue;
 
 			EIO_ASSERT(dmc1->dev_info == EIO_DEV_PARTITION);
@@ -318,7 +319,8 @@ deactivate:
 			break;
 		}
 
-		if ((dmc->dev_info == EIO_DEV_WHOLE_DISK) || (found_partitions == 0))
+		if ((dmc->dev_info == EIO_DEV_WHOLE_DISK) ||
+			(found_partitions == 0))
 			rq->make_request_fn = dmc->origmfn;
 
 	list_del_init(&dmc->cachelist);
@@ -361,7 +363,8 @@ void eio_ttc_init(void)
  * 4. Race condition:
  */
 
-static MAKE_REQUEST_FN_TYPE eio_make_request_fn(struct request_queue *q, struct bio *bio)
+static MAKE_REQUEST_FN_TYPE eio_make_request_fn(struct request_queue *q,
+                                                struct bio *bio)
 {
 	int ret;
 	int overlap;
@@ -396,7 +399,8 @@ re_lookup:
 
 		/* I/O perfectly fit within cached partition */
 		if ((EIO_BIO_BI_SECTOR(bio) >= dmc1->dev_start_sect) &&
-		    ((EIO_BIO_BI_SECTOR(bio) + eio_to_sector(EIO_BIO_BI_SIZE(bio)) - 1) <=
+		    ((EIO_BIO_BI_SECTOR(bio) +
+		      eio_to_sector(EIO_BIO_BI_SIZE(bio)) - 1) <=
 		     dmc1->dev_end_sect)) {
 			EIO_ASSERT(overlap == 0);
 			dmc = dmc1;     /* found cached partition */
@@ -553,8 +557,8 @@ static void eio_cache_rec_fill(struct cache_c *dmc, struct cache_rec_short *rec)
 		sizeof(rec->cr_ssd_devname) - 1);
 	rec->cr_src_dev_size = eio_get_device_size(dmc->disk_dev);
 	rec->cr_ssd_dev_size = eio_get_device_size(dmc->cache_dev);
-	rec->cr_src_sector_size = 0;    /* unused in userspace */
-	rec->cr_ssd_sector_size = 0;    /* unused in userspace */
+	rec->cr_src_sector_size = LOG_BLK_SIZE(dmc->disk_dev->bdev);
+	rec->cr_ssd_sector_size = LOG_BLK_SIZE(dmc->cache_dev->bdev);
 	rec->cr_flags = dmc->cache_flags;
 	rec->cr_policy = dmc->req_policy;
 	rec->cr_mode = dmc->mode;
@@ -930,9 +934,10 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 			un_bio->bvecs = bvec;
 			un_bio->io = io;
 			un_bio->op = op;
-			pr_info("dispatch_io: processing unaligned I/O: sector %lu, count %lu",
-	                        (where->sector + where->count - remaining),
-			        remaining);
+			pr_debug("dispatch_io: processing unaligned I/O: sector %lu, count %lu",
+	                         (where->sector + where->count - remaining),
+			         remaining);
+			atomic64_inc(&dmc->eio_stats.unaligned_ios);
 			r = do_unaligned_io(un_bio, (where->sector +
 				            where->count - remaining),
 				            remaining, where->bdev, &vecs,

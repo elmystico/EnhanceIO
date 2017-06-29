@@ -1684,7 +1684,7 @@ int eio_cache_create(struct cache_rec_short *cache)
 	cache->cr_src_sector_size = LOG_BLK_SIZE(dmc->disk_dev->bdev);
 	cache->cr_ssd_sector_size = LOG_BLK_SIZE(dmc->cache_dev->bdev);
 
-	if (cache->cr_blksize && cache->cr_ssd_sector_size) {
+	if (cache->cr_blksize) {
 		dmc->block_size = cache->cr_blksize >> SECTOR_SHIFT;
 		if (dmc->block_size & (dmc->block_size - 1)) {
 			strerr = "Invalid block size";
@@ -1693,33 +1693,20 @@ int eio_cache_create(struct cache_rec_short *cache)
 		}
 		if (dmc->block_size == 0)
 			dmc->block_size = DEFAULT_CACHE_BLKSIZE;
-	} else
+	} else {
 		dmc->block_size = DEFAULT_CACHE_BLKSIZE;
+	}
 	dmc->block_shift = ffs(dmc->block_size) - 1;
 	dmc->block_mask = dmc->block_size - 1;
 
 	/*
 	 * dmc->size is specified in sectors here, and converted to blocks later
-	 *
-	 * Giving preference to kernel got cache size.
-	 * Only when we can't get the cache size in kernel, we accept user passed size.
-	 * User mode may be using a different API or could also do some rounding, so we
-	 * prefer kernel getting the cache size. In case of device failure and coming back, we
-	 * rely on the device size got in kernel and we hope that it is equal to the
-	 * one we used for creating the cache, so we ideally should always use the kernel
-	 * got cache size.
 	 */
 	dmc->size = eio_to_sector(eio_get_device_size(dmc->cache_dev));
 	if (dmc->size == 0) {
-		if (cache->cr_ssd_dev_size && cache->cr_ssd_sector_size)
-			dmc->size =
-				EIO_DIV(cache->cr_ssd_dev_size, cache->cr_ssd_sector_size);
-
-		if (dmc->size == 0) {
-			strerr = "Invalid cache size or can't be fetched";
-			error = -EINVAL;
-			goto bad5;
-		}
+		strerr = "Invalid cache size or can't be fetched";
+		error = -EINVAL;
+		goto bad5;
 	}
 
 	dmc->cache_size = dmc->size;

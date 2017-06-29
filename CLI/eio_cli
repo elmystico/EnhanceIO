@@ -362,16 +362,6 @@ class Cache_rec(Structure):
 
 	def create(self):		 
 
-		src_sz = Dev_info() 
-		src_sz.get_device_size_info(self.src_name)
-		self.src_size = src_sz.dev_size
-		self.src_sector_size = src_sz.dev_sect_size
-
-		ssd_sz = Dev_info()
-		ssd_sz.get_device_size_info(self.ssd_name)
-		self.ssd_size = ssd_sz.dev_size
-		self.ssd_sector_size = ssd_sz.dev_sect_size
-
 		self.print_info()	
 		if self.do_eio_ioctl(EIO_IOC_CREATE) == SUCCESS:
 			self.create_rules()
@@ -478,25 +468,7 @@ class Status:
 		self.ret = outret			
 		pass
 
-#Block Device class 
-class Dev_info:
-		
-	dev_size = 0 	
-	dev_sect_size = 0
-
-	def get_device_size_info(self,name):
-		fd = open(name,"r")
-		
-		status = run_cmd("blockdev --getsize64 "+ name);
-		self.dev_size = int(status.output.split()[0])
-
-		status = run_cmd("blockdev --getss "+ name);
-                self.dev_sect_size = int(status.output.split()[0])
-		
-		pass
-
 def create_parser():
-
 
 	mainparser = ArgumentParser()
 	parser = mainparser.add_subparsers()		

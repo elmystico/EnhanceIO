@@ -1941,6 +1941,8 @@ static int eio_stats_show(struct seq_file *seq, void *v)
 		   (int64_t)atomic64_read(&stats->rdtime_ms));
 	seq_printf(seq, "%-26s %12lld\n", "wrtime_ms",
 		   (int64_t)atomic64_read(&stats->wrtime_ms));
+	seq_printf(seq, "%-26s %12lld\n", "unaligned_ios",
+		   (int64_t)atomic64_read(&stats->unaligned_ios));
 	return 0;
 }
 

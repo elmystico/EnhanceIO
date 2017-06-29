@@ -2035,7 +2035,7 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 
 	if (force_inval)
 		ebio->eb_iotype |= EB_INVAL;
-	ebio->eb_next = anchored_bios;  /*Anchor the ebio list to this super bio*/
+	ebio->eb_next = anchored_bios; /*Anchor the ebio list to this super bio*/
 	job = eio_new_job(dmc, ebio, -1);
 
 	if (unlikely(job == NULL)) {
@@ -2381,11 +2381,11 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	struct eio_bio *eend = NULL;
 	struct eio_bio *enext = NULL;
 
-	if (EIO_BIO_BI_IDX(bio) != 0)
-		pr_warn("in eio_map bio_idx is %u", EIO_BIO_BI_IDX(bio));
-//	EIO_ASSERT(EIO_BIO_BI_IDX(bio) == 0);
+	pr_debug("new I/O, idx=%u, sector=%lu, size=%u, vcnt=%d,",
+	         EIO_BIO_BI_IDX(bio), EIO_BIO_BI_SECTOR(bio), EIO_BIO_BI_SIZE(bio), bio->bi_vcnt);
 
-	pr_debug("this needs to be removed immediately\n");
+	if (EIO_BIO_BI_IDX(bio) != 0)
+		pr_debug("in eio_map bio_idx is %u", EIO_BIO_BI_IDX(bio));
 
 	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pr_debug
