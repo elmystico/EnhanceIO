@@ -931,6 +931,10 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 			int r;
 
 			un_bio = kzalloc(sizeof(*un_bio), GFP_NOIO);
+			if (unlikely(!un_bio)) {
+				pr_err("dispatch_io: Unable to allocate un_bio.\n");
+				return -ENOMEM;
+			}
 			un_bio->bvecs = bvec;
 			un_bio->io = io;
 			un_bio->op = op;

@@ -2022,7 +2022,7 @@ eio_disk_io(struct cache_c *dmc, struct bio *bio,
 	int error = 0;
 
 	/*disk io happens on whole bio. Reset bi_idx*/
-	EIO_BIO_BI_IDX(bio) = 0;
+	EIO_BIO_BI_IDX(bio) = bc->bio_idx;
 	ebio =
 		eio_new_ebio(dmc, bio, &residual_biovec, EIO_BIO_BI_SECTOR(bio),
 				 EIO_BIO_BI_SIZE(bio), bc, EB_MAIN_IO);
@@ -2462,6 +2462,7 @@ int eio_map(struct cache_c *dmc, struct request_queue *rq, struct bio *bio)
 	}
 	bc->bc_iotime = jiffies;
 	bc->bc_bio = bio;
+	bc->bio_idx = EIO_BIO_BI_IDX(bio);
 	bc->bc_dmc = dmc;
 	spin_lock_init(&bc->bc_lock);
 	atomic_set(&bc->bc_holdcount, 1);

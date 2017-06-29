@@ -876,6 +876,7 @@ struct bio_container {
 	spinlock_t bc_lock;                     /* lock protecting the bc fields */
 	atomic_t bc_holdcount;                  /* number of ebios referencing bc */
 	struct bio *bc_bio;                     /* bio for the bc */
+	unsigned int bio_idx;                   /* original bi_idx of bio */
 	struct cache_c *bc_dmc;                 /* cache structure */
 	struct eio_bio *bc_mdlist;              /* ebios waiting for md update */
 	int bc_mdwait;                          /* count of ebios that will do md update */
