@@ -810,13 +810,14 @@ out:
 	end_unaligned_free(bio, error);
 }
 
-static int do_unaligned_io(struct unaligned_bio *un_bio, sector_t sector,
+static long do_unaligned_io(struct unaligned_bio *un_bio, sector_t sector,
                            sector_t remaining, struct block_device *bdev,
                            int *compl_vecs, unsigned long *vec_remain)
 {
 	struct bio *bio;
 	struct bio_vec *bvec;
 	int remain;
+	long len;
 
 	/* alloc page and bio_add_page it */
 
@@ -842,8 +843,10 @@ static int do_unaligned_io(struct unaligned_bio *un_bio, sector_t sector,
 		EIO_ALIGN_SECTOR(bdev, sector);
 
 	un_bio->offset = to_bytes(sector - EIO_BIO_BI_SECTOR(bio));
-	un_bio->len = min_t(int, (EIO_BIO_BI_SIZE(bio) - un_bio->offset),
-	                    to_bytes(remaining));
+	len = min_t(int, (EIO_BIO_BI_SIZE(bio) - un_bio->offset),
+	            to_bytes(remaining));
+	EIO_ASSERT(len > 0);
+	un_bio->len = len;
 
 	if (*vec_remain > 0) {
 		remain = un_bio->len - *vec_remain;
@@ -886,7 +889,7 @@ static int do_unaligned_io(struct unaligned_bio *un_bio, sector_t sector,
 	bio_set_op_attrs(bio, REQ_OP_READ, EIO_REQ_SYNC);
 	atomic_inc(&un_bio->io->count);
 	submit_bio(bio);
-	return eio_to_sector(un_bio->len);
+	return eio_to_sector(len);
 
 free_page:
 	put_page(un_bio->page);
@@ -928,7 +931,7 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 			         where->sector + where->count - remaining) ||
 			 remaining < LOG_BLK_SSIZE(where->bdev))) {
 			int vecs = 0;
-			int r;
+			long r;
 
 			un_bio = kzalloc(sizeof(*un_bio), GFP_NOIO);
 			if (unlikely(!un_bio)) {
