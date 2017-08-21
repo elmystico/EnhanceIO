@@ -179,6 +179,9 @@ static inline int op_from_rq_bits(u64 flags)
  * We don't have WRITE_FLUSH.
  * We shouldn't use bio_set_op_attrs anymore (but we are allowed to)*/
 #ifndef bio_flags
+#ifndef REQ_OP_MASK /* kernel 4.8 */
+#define REQ_OP_MASK	((1 << REQ_OP_BITS) - 1)
+#endif
 #define bio_flags(bio) ((bio)->bi_opf & ~REQ_OP_MASK)
 #endif
 #ifndef WRITE_FLUSH
