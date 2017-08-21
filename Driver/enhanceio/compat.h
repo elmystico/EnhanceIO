@@ -4,6 +4,9 @@
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38))
 #define COMPAT_HAVE_BLKDEV_GET_BY_PATH
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0))
+#define COMPAT_KMAP_ATOMIC_ONE_PARAM
+#endif
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
 #define COMPAT_MAKE_REQUEST_FN_RET_VOID
 #define COMPAT_MAKE_REQUEST_FN_SUBMITS_IO
@@ -238,6 +241,14 @@ static inline long atomic64_dec_if_positive(atomic64_t *v)
         }
         return dec;
 }
+#endif
+
+#ifdef COMPAT_KMAP_ATOMIC_ONE_PARAM
+#define EIO_KMAP_ATOMIC(PAGE,TYPE) kmap_atomic(PAGE)
+#define EIO_KUNMAP_ATOMIC(PAGE,TYPE) kunmap_atomic(PAGE)
+#else
+#define EIO_KMAP_ATOMIC(PAGE,TYPE) kmap_atomic(PAGE,TYPE)
+#define EIO_KUNMAP_ATOMIC(PAGE,TYPE) kunmap_atomic(PAGE,TYPE)
 #endif
 
 #ifndef COMPAT_HAVE_BLKDEV_GET_BY_PATH

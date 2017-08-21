@@ -718,9 +718,10 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
 
 static void end_unaligned_free(struct bio *bio, int error)
 {
-	EIO_ENDIO_FN_START;
 	struct unaligned_bio *un_bio = bio->bi_private;
 	struct eio_context *io = un_bio->io;
+	
+	EIO_ENDIO_FN_START;	
 
 	put_page(un_bio->page);
 	un_bio->page = NULL;
@@ -732,18 +733,19 @@ static void end_unaligned_free(struct bio *bio, int error)
 
 static void end_unaligned_io(struct bio *bio, int error)
 {
-	EIO_ENDIO_FN_START;
 	unsigned char *loc_mem, *rem_mem;
 	int remain, offset;
 	struct unaligned_bio *un_bio = bio->bi_private;
 	struct bio *write_bio;
+	
+	EIO_ENDIO_FN_START;
 
 	if (error) {
 		pr_err("end_unaligned_io: I/O ERROR %d", error);
 		goto out;
 	}
 
-	loc_mem = kmap_atomic(un_bio->page);
+	loc_mem = EIO_KMAP_ATOMIC(un_bio->page, KM_USER0);
 	remain = un_bio->len;
 	offset = un_bio->offset;
 	while (remain > 0) {
@@ -760,13 +762,13 @@ static void end_unaligned_io(struct bio *bio, int error)
 			EIO_ASSERT (rem_len > 0);
 		}
 		bytes = min_t(unsigned, rem_len, remain);
-		rem_mem = kmap_atomic(un_bio->bvecs->bv_page);
+		rem_mem = EIO_KMAP_ATOMIC(un_bio->bvecs->bv_page, KM_USER1);
 		if (un_bio->op == REQ_OP_READ) {
 			memcpy(rem_mem + rem_offset, loc_mem + offset, bytes);
 		} else if (un_bio->op == REQ_OP_WRITE) {
 			memcpy(loc_mem + offset, rem_mem + rem_offset, bytes);
 		}
-		kunmap_atomic(rem_mem);
+		EIO_KUNMAP_ATOMIC(rem_mem, KM_USER1);
 		remain -= bytes;
 		if (remain > 0) {
 			/*
@@ -779,7 +781,7 @@ static void end_unaligned_io(struct bio *bio, int error)
 		}
 	}
 
-	kunmap_atomic(loc_mem);
+	EIO_KUNMAP_ATOMIC(loc_mem, KM_USER0);
 
 	if (un_bio->op == REQ_OP_WRITE) {
 		write_bio = bio_alloc(GFP_NOIO, 1);
