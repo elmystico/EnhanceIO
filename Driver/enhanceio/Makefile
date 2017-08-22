@@ -22,10 +22,10 @@ enhanceio_fifo-y	+= eio_fifo.o
 enhanceio_rand-y	+= eio_rand.o
 enhanceio_lru-y	+= eio_lru.o
 .PHONY: all
-all: modules 
+all: modules
 .PHONY:    modules
 modules:
-	make -C $(KERNEL_TREE) M=$(PWD) modules V=0
+	make -C $(KERNEL_TREE) M=$(CURDIR) modules V=0
 .PHONY: modules_install
 modules_install: modules
 	install -o root -g root -m 0755 -d $(DESTDIR)/lib/modules/$(KERNEL_SOURCE_VERSION)/extra/enhanceio/
@@ -38,4 +38,4 @@ modules_install: modules
 install: modules_install
 .PHONY: clean
 clean:
-	make -C $(KERNEL_TREE) M=$(PWD) clean
+	make -C $(KERNEL_TREE) M=$(CURDIR) clean
