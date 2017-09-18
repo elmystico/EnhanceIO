@@ -126,6 +126,12 @@
 #define REQ_WRITE 1
 #endif
 
+#ifdef COMPAT_BIO_OPS_BACKPORTED
+
+#define  REQ_OP_FLUSH		REQ_OP_WRITE
+
+#else
+
 enum req_op {
        REQ_OP_READ,                             /* 0 */
        REQ_OP_WRITE             = REQ_WRITE,    /* 1 */
@@ -145,11 +151,6 @@ enum req_op {
 };
 
 #define bio_op(bio)          (op_from_rq_bits((bio)->bi_rw))
-
-/* This bio_flags macro is inconsistent with bio_flags in kernels > 4.8,
- * because it returns operations also, but it doesn't matter as flags
- * and operations are simply or'ed together in older kernels */
-#define bio_flags(bio)       ((bio)->bi_rw)
 
 static inline void bio_set_op_attrs(struct bio *bio, const int op, const long flags)
 {
@@ -172,8 +173,16 @@ static inline int op_from_rq_bits(u64 flags)
                 return REQ_OP_READ;
 }
 
+#endif /* BIO_OPS_BACKPORTED */
+
+/* This bio_flags macro is inconsistent with bio_flags in kernels > 4.8,
+ * because it returns operations also, but it doesn't matter as flags
+ * and operations are simply or'ed together in older kernels */
+#define bio_flags(bio)       ((bio)->bi_rw)
 #define submit_bio(__bio) submit_bio((__bio)->bi_rw, __bio)
+
 #else /* COMPAT_HAVE_BIO_OPF */
+
 /* They shuffled a way to work with bio in 4.10 AGAIN.
  * We don't have bio_flags macro.
  * We don't have WRITE_FLUSH.
