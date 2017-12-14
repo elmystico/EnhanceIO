@@ -360,6 +360,7 @@ struct flash_cacheblock {
 
 /* In bytes: */
 #define LOG_BLK_SIZE(bdev)    (bdev_logical_block_size(bdev))
+#define BIO_LOG_BLK_SIZE(bio) (queue_logical_block_size(EIO_BIO_GET_QUEUE(bio)))
 /* In sectors: */
 #define LOG_BLK_SSIZE(bdev)   (eio_to_sector(LOG_BLK_SIZE(bdev)))
 #define EIO_SEC_UNALIGNED(bdev, sector) ((sector) & ((unsigned long)(LOG_BLK_SSIZE(bdev) - 1)))

@@ -36,6 +36,12 @@
 #define COMPAT_NO_GENDISK_DRIVERFS_DEV
 #define COMPAT_HAVE_BIO_OPF
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0))
+#define COMPAT_HAVE_BIO_BI_STATUS
+#endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,0))
+#define COMPAT_NO_BIO_BIDEV
+#endif
 
 /*Include features backported to RedHat kernels*/
 #ifdef RHEL_RELEASE_CODE
@@ -285,7 +291,7 @@ static inline struct block_device *blkdev_get_by_path(const char *path, fmode_t 
 #endif
 
 #ifdef COMPAT_HAVE_BIO_BI_ERROR
-#ifdef BLK_STS_OK /* kernels > 4.13 */
+#ifdef COMPAT_HAVE_BIO_BI_STATUS
 #define EIO_ENDIO_FN_START int error __maybe_unused = blk_status_to_errno(bio->bi_status)
 #define EIO_BIO_ENDIO(B,E) do { (B)->bi_status = errno_to_blk_status(E); bio_endio(B); } while (0)
 #else
@@ -312,4 +318,19 @@ static inline struct block_device *blkdev_get_by_path(const char *path, fmode_t 
 #else /*return type is int for older kernels*/
 #define MAKE_REQUEST_FN_TYPE int
 #define MAKE_REQUEST_FN_RETURN_0 return 0
+#endif
+
+#ifdef COMPAT_NO_BIO_BIDEV
+#define EIO_BIO_DEV(bio) bdget_disk((bio)->bi_disk, (bio)->bi_partno)
+#define EIO_BIO_SET_DEV(bio, bdev) bio_set_dev(bio, bdev)
+#define EIO_BIO_COPY_DEV(DEST, SRC) \
+        do { (DEST)->bi_disk = (SRC)->bi_disk; \
+             (DEST)->bi_partno = (SRC)->bi_partno; } while (0)
+#define EIO_BIO_GET_QUEUE(bio) (bio)->bi_disk->queue
+#else
+#define EIO_BIO_DEV(bio) (bio)->bi_bdev
+#define EIO_BIO_SET_DEV(bio, bdev) (bio)->bi_bdev = (bdev)
+#define EIO_BIO_COPY_DEV(DEST, SRC) \
+	do { (DEST)->bi_bdev = (SRC)->bi_bdev; } while (0)
+#define EIO_BIO_GET_QUEUE(bio) bdev_get_queue((bio)->bi_bdev)
 #endif

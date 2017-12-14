@@ -97,7 +97,7 @@ void hdd_make_request(make_request_fn *origmfn, struct bio *bio)
 {
 	struct request_queue *q = NULL;
 	int __maybe_unused ret;
-	q = bdev_get_queue(bio->bi_bdev);
+	q = EIO_BIO_GET_QUEUE(bio);
 	if (unlikely(!q)) {
 		pr_err("EIO: Trying to access nonexistent block-device\n");
 		EIO_BIO_ENDIO(bio, -EIO);
@@ -373,7 +373,7 @@ static MAKE_REQUEST_FN_TYPE eio_make_request_fn(struct request_queue *q,
 	struct cache_c *dmc, *dmc1;
 	struct block_device *bdev;
 
-	bdev = bio->bi_bdev;
+	bdev = EIO_BIO_DEV(bio);
 
 re_lookup:
 	dmc = NULL;
@@ -678,7 +678,7 @@ static int eio_dispatch_io_pages(struct cache_c *dmc,
                             EIO_BIO_GET_NR_VECS(where->bdev),
                             remaining_bvecs);
 		bio = bio_alloc(GFP_NOIO, num_bvecs);
-		bio->bi_bdev = where->bdev;
+		EIO_BIO_SET_DEV(bio, where->bdev);
 		EIO_BIO_BI_SECTOR(bio) = where->sector + (where->count - remaining);
 
 		/* Remap the start sector of partition */
@@ -791,14 +791,14 @@ static void end_unaligned_io(struct bio *bio, int error)
 			goto out;
 		}
 		if (unlikely(!bio_add_page(write_bio, un_bio->page,
-				           LOG_BLK_SIZE(bio->bi_bdev), 0))) {
+				           BIO_LOG_BLK_SIZE(bio), 0))) {
 			pr_err("end_unaligned: Unable to add page to bio.\n");
 			bio_put(write_bio);
 			error = -ENOMEM;
 			goto out;
 		}
 		EIO_BIO_BI_SECTOR(write_bio) = EIO_BIO_BI_SECTOR(bio);
-		write_bio->bi_bdev = bio->bi_bdev;
+		EIO_BIO_COPY_DEV(write_bio, bio);
 		write_bio->bi_end_io = end_unaligned_free;
 		write_bio->bi_private = un_bio;
 		bio_set_op_attrs(write_bio, REQ_OP_WRITE, EIO_REQ_SYNC);
@@ -885,7 +885,7 @@ static long do_unaligned_io(struct unaligned_bio *un_bio, sector_t sector,
 		(*compl_vecs)++;
 	}
 
-	bio->bi_bdev = bdev;
+	EIO_BIO_SET_DEV(bio, bdev);
 	bio->bi_end_io = end_unaligned_io;
 	bio->bi_private = un_bio;
 	bio_set_op_attrs(bio, REQ_OP_READ, EIO_REQ_SYNC);
@@ -983,7 +983,7 @@ static int eio_dispatch_io(struct cache_c *dmc, struct eio_io_region *where,
 				EIO_ALIGN_SECTOR(where->bdev, remaining);
 		}
 		bio = bio_alloc(GFP_NOIO, num_bvecs);
-		bio->bi_bdev = where->bdev;
+		EIO_BIO_SET_DEV(bio, where->bdev);
 		EIO_BIO_BI_SECTOR(bio) = where->sector +
 			                 (where->count - remaining);
 
@@ -1198,7 +1198,7 @@ static void eio_issue_empty_barrier_flush(struct block_device *bdev,
 			EIO_BIO_ENDIO(orig_bio, -ENOMEM);
 	bio->bi_end_io = eio_bio_end_empty_barrier;
 	bio->bi_private = orig_bio;
-	bio->bi_bdev = bdev;
+	EIO_BIO_SET_DEV(bio, bdev);
 	bio_set_op_attrs(bio, op, op_flags);
 
 	bio_get(bio);
@@ -1944,7 +1944,7 @@ static struct bio *eio_split_new_bio(struct bio *bio, struct bio_container *bc,
 
 	EIO_BIO_BI_SECTOR(cbio) = snum;
 	EIO_BIO_BI_SIZE(cbio) = iosize;
-	cbio->bi_bdev = bio->bi_bdev;
+	EIO_BIO_COPY_DEV(cbio, bio);
 	cbio->bi_opf = bio->bi_opf;
 	cbio->bi_vcnt = 1;
 	EIO_BIO_BI_IDX(cbio) = 0;
