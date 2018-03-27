@@ -25,7 +25,7 @@ import sys,struct
 import subprocess
 import os
 import re
-
+import time
 libc = CDLL('libc.so.6')
 
 #TBD : Change ioctl numbers to comply with linux kernel convention
@@ -53,93 +53,51 @@ FIOCMD="fio --rw=randrw --verify=meta --verify_pattern=0x3982 --ioengine=libaio 
 udev_template = """
 ACTION!="add|change", GOTO="EIO_EOF"
 SUBSYSTEM!="block", GOTO="EIO_EOF"
-
 <cache_match_expr>, GOTO="EIO_CACHE"
 <source_match_expr>, GOTO="EIO_SOURCE"
-
 # If none of the rules above matched then it isn't an \
 EnhanceIO device so ignore it.
 GOTO="EIO_EOF"
-
 #=================== EIO_CACHE =======================
-
 # If we just found the cache device and the source already \
 exists then we can setup
-
 LABEL="EIO_CACHE"
 TEST!="/dev/enhanceio/<cache_name>", \
 PROGRAM="/bin/mkdir -p /dev/enhanceio/<cache_name>"
 PROGRAM="/bin/sh -c 'echo $kernel > /dev/enhanceio/<cache_name>/.ssd_name'"
-TEST=="/proc/enhanceio/<cache_name>", \
-RUN+="/sbin/eio_cli notify -a add -s /dev/$kernel -c <cache_name>", \
-GOTO="EIO_EOF"
-
+TEST!="/proc/enhanceio/<cache_name>", \
+RUN+="/sbin/eio_cli notify -a add -s /dev/$kernel -c <cache_name>"
 TEST=="/dev/enhanceio/<cache_name>/.disk_name", GOTO="EIO_SETUP"
-
 GOTO="EIO_EOF"
-
 #=================== EIO_SOURCE =======================
-
 # If we just found the source device and the cache already \
 exists then we can setup
-
 LABEL="EIO_SOURCE"
 TEST=="/dev/enhanceio/<cache_name>/.eio_delete", GOTO="EIO_SOURCE_DELETE"
 TEST!="/dev/enhanceio/<cache_name>", PROGRAM="/bin/mkdir -p \
 /dev/enhanceio/<cache_name>"
 PROGRAM="/bin/sh -c 'echo $kernel > /dev/enhanceio/<cache_name>/.disk_name'"
-
-PROGRAM="/bin/sh -c 'echo $major $minor > \
-/dev/enhanceio/<cache_name>/.disk_mjr_mnr'"
-
-PROGRAM="/bin/sh -c 'echo $links > \
-/dev/enhanceio/<cache_name>/.srclinks'"
-
 TEST=="/proc/enhanceio/<cache_name>",\
-PROGRAM="/bin/grep 'state\s*failed' /proc/enhanceio/<cache_name>/config", \
+PROGRAM="/bin/grep 'state\s*failed' /proc/enhanceio/<cache_name>/config", \\
 PROGRAM="/bin/grep 'no_source_dev\s*1' /proc/enhanceio/<cache_name>/errors", \
 RUN+="/sbin/eio_cli notify -a add -d /dev/$kernel -c <cache_name>", NAME="", \
 GOTO="EIO_EOF"
-
 TEST!="/proc/enhanceio/<cache_name>", \
 TEST!="/dev/enhanceio/<cache_name>/.eio_delete", ACTION!="change", NAME=""
-	
 TEST=="/dev/enhanceio/<cache_name>/.ssd_name", GOTO="EIO_SETUP"
-
 GOTO="EIO_EOF"
-
 #=================== EIO_SOURCE_DELETE =======================
-
 LABEL="EIO_SOURCE_DELETE"
 PROGRAM="/bin/sh -c 'cat /dev/enhanceio/<cache_name>/.disk_name'", \
 ENV{disk_name}="%c"
 TEST=="/dev/enhanceio/<cache_name>/.disk_name", ENV{disk_name}=="?*", \
 NAME="$env{disk_name}"
 PROGRAM="/bin/unlink /dev/enhanceio/<cache_name>/.disk_name"
-PROGRAM="/bin/unlink /dev/enhanceio/<cache_name>/.disk_mjr_mnr"
 GOTO="EIO_EOF"
 #=================== EIO_SETUP =======================
-
 LABEL="EIO_SETUP"
-PROGRAM="/bin/sh -c 'cat /dev/enhanceio/<cache_name>/.ssd_name'", \
-ENV{ssd_name}="%c"
-PROGRAM="/bin/sh -c 'cat /dev/enhanceio/<cache_name>/.disk_name'", \
-ENV{disk_name}="%c"
-
-TEST!="/proc/enhanceio/<cache_name>", \
-TEST!="/dev/enhanceio/<cache_name>/.skip_enable", \
-RUN+="/bin/sh -c '/bin/mknod /dev/$env{disk_name} b \
-`/bin/cat /dev/enhanceio/<cache_name>/.disk_mjr_mnr`'"
-
-TEST!="/proc/enhanceio/<cache_name>", \
-RUN+="/bin/sh -c ' for i in `cat /dev/enhanceio/<cache_name>/.srclinks`; \
-do rm -f /dev/$$i; ln -f -s /dev/$env{disk_name} /dev/$$i; done'"
-
-
-TEST!="/proc/enhanceio/<cache_name>", RUN+="/sbin/eio_cli \
-enable -d /dev/$env{disk_name} -s /dev/$env{ssd_name} -m <mode> \
--b <block_size> -p <policy> -c <cache_name>"
-
+TEST!="/proc/enhanceio/<cache_name>",\\
+RUN+="/sbin/eio_cli enable -d <cache_src_name> -s <cache_ssd_name> -m <mode> -b <block_size> -p <policy> -c <cache_name>"
 LABEL="EIO_EOF"
 """
 
@@ -147,7 +105,7 @@ def make_udev_match_expr(dev_path, cache_name):
 	dict_udev = {}
 	status = run_cmd("udevadm info --query=property --name=" + dev_path)
 	for line in status.output.split('\n'):
-		if line is not '':
+		if line is not '' and 'calling:' not in line:
 			temp = line.split("=", 1)
 			dict_udev[temp[0].strip()] = temp[1].strip()
 
@@ -199,6 +157,12 @@ def make_udev_match_expr(dev_path, cache_name):
 	if "ID_FS_UUID" in dict_udev:
 		match_expr= 'ENV{DM_NAME}!="' + cache_name + \
 		'", ENV{ID_FS_UUID}=="' + dict_udev["ID_FS_UUID"] + '"'
+		return match_expr
+		
+	# Fall through, use device names only
+	if dict_udev["DEVTYPE"] == "disk":
+		match_expr='KERNEL=="'+ dev_path.split('/')[-1] + \
+		'", ENV{DEVTYPE}=="'+ dict_udev["DEVTYPE"] +'"'
 		return match_expr
 
 
@@ -308,6 +272,7 @@ class Cache_rec(Structure):
 	def do_eio_ioctl(self,IOC_TYPE):
 		#send ioctl to driver
 		fd = os.open(EIODEV, os.O_RDWR, 0400)
+		fmt = ''
 		selfaddress = c_ulong(addressof(self))
 		try:
 			if libc.ioctl(fd, IOC_TYPE, selfaddress) == SUCCESS:
@@ -397,7 +362,7 @@ class Cache_rec(Structure):
 
 
 	def create_rules(self):
-		
+
 		source_match_expr = make_udev_match_expr(self.src_name, self.name)
 		print source_match_expr
 		cache_match_expr = make_udev_match_expr(self.ssd_name, self.name)
@@ -407,12 +372,14 @@ class Cache_rec(Structure):
 	
 		try: 	
 			udev_rule = udev_template.replace("<cache_name>",\
-				    self.name).replace("<source_match_expr>",\
-				    source_match_expr).replace("<cache_match_expr>",\
-				    cache_match_expr).replace("<mode>",\
-				    modes[self.mode]).replace("<block_size>",\
-				    str(self.blksize)).replace("<policy>",\
-				    policies[self.policy])	
+				self.name).replace("<source_match_expr>",\
+				source_match_expr).replace("<cache_match_expr>",\
+				cache_match_expr).replace("<mode>",\
+				modes[self.mode]).replace("<block_size>",\
+				str(self.blksize)).replace("<policy>",\
+				policies[self.policy]).replace("<cache_src_name>",\
+				self.src_name).replace("<cache_ssd_name>",\
+				self.ssd_name)
 
 			# write rule file
 			rule_file_path = "/etc/udev/rules.d/94-enhanceio-" + \
@@ -424,7 +391,7 @@ class Cache_rec(Structure):
 		except Exception as e:
 			print "Creation of udev rules file failed\n" 
 			print e
- 			return FAILURE
+			return FAILURE
 
 	def delete(self):
 
@@ -443,7 +410,6 @@ class Cache_rec(Structure):
 		run_cmd("/bin/rm -f /dev/enhanceio/" + self.name + "/.eio_delete")
 		
 		return FAILURE
-
 						
 	def delete_rules(self):
 				
@@ -458,7 +424,7 @@ class Cache_rec(Structure):
 			"(please remove it manually)"
 			print e
 		return FAILURE
-	
+
 class Status:
 	output = ""
 	ret = 0
@@ -557,6 +523,21 @@ def main():
 	 	
 	mainparser = create_parser()
 	args = mainparser.parse_args()
+	#create runfile to help race conditions when multiple eio_cli started; pause script
+	if hasattr(args, 'cache'):
+		runfile = "/run/eio_cli." + args.cache
+	elif sys.argv[1] == "sanity":
+		runfile = "/run/eio_cli.test_cache"
+	else:
+		runfile = "/run/eio_cli.null"
+	waittime = 0.0
+	while waittime <= 10.0 and (os.path.isfile(runfile) or os.path.isfile("/run/eio_cli.null")):
+		time.sleep (0.025)
+		waittime=waittime+0.025
+	if waittime < 10.0:
+		open(runfile, 'a').close()
+	else:
+		print "Another eio_cli process running. Remove file" + runfile
 
 	run_cmd("/sbin/modprobe enhanceio")
 	run_cmd("/sbin/modprobe enhanceio_fifo")
@@ -573,6 +554,7 @@ def main():
 		cache = Cache_rec(name = args.cache, src_name = args.hdd,\
 				ssd_name = args.ssd, policy = args.policy,\
 				mode = args.mode, blksize = args.blksize)
+		os.remove(runfile)
 		return cache.create()
 
 	elif sys.argv[1] == "info":
@@ -587,18 +569,22 @@ def main():
 
 			print "\nFor more information look at " + \
 			      "/proc/enhanceio/<cache_name>/config"
+		os.remove(runfile)
 		return SUCCESS
 
 	elif sys.argv[1] == "edit":
 		cache = Cache_rec(name = args.cache, policy = args.policy, mode = args.mode)
+		os.remove(runfile)
 		return cache.edit()
 
 	elif sys.argv[1] == "delete":
 		cache = Cache_rec(name = args.cache)
+		os.remove(runfile)
 		return cache.delete()
 
 	elif sys.argv[1] == "clean":
 		cache = Cache_rec(name = args.cache)
+		os.remove(runfile)
 		return cache.clean()
 
 	elif sys.argv[1] == "enable":
@@ -608,10 +594,12 @@ def main():
 				mode = args.mode, blksize = args.blksize, persistence = 1)
 
 		cache.do_eio_ioctl(EIO_IOC_ENABLE)
+		os.remove(runfile)
 
 	elif sys.argv[1] == "disable":
 		cache = Cache_rec(name = args.cache)
 		cache.do_eio_ioctl(EIO_IOC_DISABLE)
+		os.remove(runfile)
 
 	elif sys.argv[1] == "notify":
 		# This command will be fired by udev rule on SSD/Source addition
@@ -640,11 +628,13 @@ def main():
 						persistence = 1)
 				cache.do_eio_ioctl(EIO_IOC_SRC_REMOVE)
 
+		os.remove(runfile)
 		pass
 
 	elif sys.argv[1] == "sanity":
 		# Performs a basic sanity check
 		sanity(args.hdd, args.ssd)
+		os.remove(runfile)
 		return SUCCESS
 
 if __name__ == '__main__':
