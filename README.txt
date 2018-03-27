@@ -1,6 +1,23 @@
 			STEC EnhanceIO SSD Caching Software
-				25th December, 2012
+				27th March, 2018
+				
+0. THIS IS elmystico/EnhaceIO VERSION
+	Code is ment to be used with initramfs/udev.
+	The goal is to start as much as it is possible before local filesystems
+	get mounted to allow root / partition and swaps to be cached.
+	This code will generate:
+	- udev rules to be put /etc/udev/rules
+	- initramfs hooks and scripts put /etc/initramfs-tools for automatic
+	initrd generation
+	- eio_cli binary to be used inside initramfs- this needs PyInstaller.
 
+	Some patches from others from github for kernel part included. This is 
+	currently tested up to kernel 4.15 but only Debian distro.
+	I will gradually add some description here.
+	I'm looking for some help here! Please contact me on github if you want
+	to do something good with me or want something to be implemented by me
+	or have some constructive thoughts. 
+	THANKS!
 
 1. WHAT IS ENHANCEIO?
 
