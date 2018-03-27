@@ -7,9 +7,10 @@
 	get mounted to allow root / partition and swaps to be cached.
 	This code will generate:
 	- udev rules to be put /etc/udev/rules
-	- initramfs hooks and scripts put /etc/initramfs-tools for automatic
-	initrd generation
+	- by initramfs hook script put /etc/initramfs-tools for automatic
+	initrd generation for:
 	- eio_cli binary to be used inside initramfs- this needs PyInstaller.
+	This way one can cache root tilesystem and swap partitions as well!
 
 	Some patches from others from github for kernel part included. This is 
 	currently tested up to kernel 4.15 but only Debian distro.

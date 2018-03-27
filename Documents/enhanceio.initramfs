@@ -1,0 +1,31 @@
+#!/bin/sh
+
+set -e
+
+PREREQ=""
+
+prereqs () {
+	echo "${PREREQ}"
+}
+
+case "${1}" in
+	prereqs)
+		prereqs
+		exit 0
+		;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+manual_add_modules enhanceio_fifo
+manual_add_modules enhanceio_lru
+
+[ -d /tmp/enhanceio ] || mkdir /tmp/enhanceio
+[ -e /sbin/eio_cli ] && cp /sbin/eio_cli /tmp/enhanceio/eio_cli
+[ -e /usr/local/bin/pyinstaller ] && /usr/local/bin/pyinstaller --specpath=/tmp/enhanceio/ --distpath=/tmp/enhanceio/dist --workpath=/tmp/enhanceio/tmp  /tmp/enhanceio/eio_cli || true
+[ -d /tmp/enhanceio/dist/eio_cli ] && for eio_file in /tmp/enhanceio/dist/eio_cli/*
+	do
+	copy_exec $eio_file /sbin/
+	done
+[ -d /tmp/enhanceio ] && rm -R /tmp/enhanceio
+exit 0

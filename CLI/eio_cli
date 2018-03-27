@@ -50,8 +50,7 @@ FIOCMD="fio --rw=randrw --verify=meta --verify_pattern=0x3982 --ioengine=libaio 
 	--iodepth=16 --direct=1 --size=1G --bsrange=512-128K --numjobs=10 \
 	--group_reporting --time_based --runtime=180 --name=job1 --filename="
 
-udev_template = """
-ACTION!="add|change", GOTO="EIO_EOF"
+udev_template = """ACTION!="add|change", GOTO="EIO_EOF"
 SUBSYSTEM!="block", GOTO="EIO_EOF"
 <cache_match_expr>, GOTO="EIO_CACHE"
 <source_match_expr>, GOTO="EIO_SOURCE"
