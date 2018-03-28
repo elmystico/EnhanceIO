@@ -10,12 +10,13 @@ Note
 1) Creating a writeback cache on root device is not supported. This is because
    the root device is mounted as read only prior to the processing of udev
    rules.
-   POSSIBLY NOT TRUE ANYMORE
-   One can use initramfs-tools hook script 'enhanceio.initramfs'.
- 
+   20180327 my explanation:
+   it seems that at reboot disk content is not strictly updated and one needs 
+   to enable cache+disk before taking files from boot partition.
+   
 2) For certain devices such as loop device the udev rule file will not be
    generated 
-   NOT TRUE ANYMORE
+   20180327: it seems this is not true
 
 3) If you use root filesystem or swap with enhanceio put
    initramfs-tools hook script 'enhanceio.initramfs'
@@ -23,3 +24,4 @@ Note
    (!)For the script to work you need pyInstaller: #pip install pyinstaller
    Remember to regenerate initrd (in debian: #update-initramfs -u -k `uname -r`).
    The script compiles eio_cli and copies into initrd, so udev can start caches before any mounts.
+   Root (boot) partition on writeback cache is not working!!!

@@ -11,6 +11,7 @@
 	initrd generation for:
 	- eio_cli binary to be used inside initramfs- this needs PyInstaller.
 	This way one can cache root tilesystem and swap partitions as well!
+	(but no write-back cache for root (boot) partition)
 
 	Some patches from others from github for kernel part included. This is 
 	currently tested up to kernel 4.15 but only Debian distro.
